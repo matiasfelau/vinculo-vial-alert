@@ -7,7 +7,7 @@ anónimo del emisor y publica el evento `alert.created` en RabbitMQ.
 
 ## Requisitos
 
-- Go 1.23 o superior
+- Go 1.25 o superior
 - Docker y Docker Compose
 - PostgreSQL (provisto por `docker-compose.yml` para desarrollo local)
 - RabbitMQ accesible con el exchange `vvi.topic.exchange` declarado
