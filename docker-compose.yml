@@ -2,9 +2,9 @@ services:
   alert:
     build: .
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:${PORT:-8080}"
     environment:
-      PORT: 8080
+      PORT: ${PORT:-8080}
       DATABASE_URL: postgres://alert:alert@alert-db:5432/alert?sslmode=disable
       VEHICLE_INTERNAL_URL: http://vehicle:8081
       VEHICLE_TIMEOUT_MS: 2000
