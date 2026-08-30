@@ -6,12 +6,15 @@ services:
     environment:
       PORT: ${PORT:-8080}
       DATABASE_URL: postgres://alert:alert@alert-db:5432/alert?sslmode=disable
-      VEHICLE_INTERNAL_URL: http://vehicle:8081
+      VEHICLE_INTERNAL_URL: http://vinculo-vial-vehicle:8081
       VEHICLE_TIMEOUT_MS: 2000
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_URL: amqp://guest:guest@vvi-rabbitmq:5672/
       RABBITMQ_EXCHANGE: vvi.topic.exchange
     depends_on:
       - alert-db
+    networks:
+      - alert-internal
+      - vinculo-vial
 
   alert-db:
     image: postgres:16-alpine
@@ -19,10 +22,16 @@ services:
       POSTGRES_USER: alert
       POSTGRES_PASSWORD: alert
       POSTGRES_DB: alert
-    ports:
-      - "5433:5432"
     volumes:
       - alert-db-data:/var/lib/postgresql/data
+    networks:
+      - alert-internal
 
 volumes:
   alert-db-data:
+
+networks:
+  alert-internal:
+    driver: bridge
+  vinculo-vial:
+    external: true
