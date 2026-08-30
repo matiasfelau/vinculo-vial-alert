@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -57,32 +58,40 @@ func (c *Client) ResolveOwners(ctx context.Context, patEnc string) ([]uuid.UUID,
 		return nil, fmt.Errorf("vehicle resolver: error al serializar la solicitud: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+resolveOwnerPath, bytes.NewReader(body))
+	targetURL := c.baseURL + resolveOwnerPath
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("vehicle resolver: error al construir la solicitud: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	slog.Info("vehicle resolver: consultando resolve-owner", "url", targetURL)
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("vehicle resolver: %w: %v", domain.ErrVehicleUnavailable, err)
+		slog.Error("falla al contactar vehicle", "url", targetURL, "error", err.Error())
+		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: %v", domain.ErrVehicleUnavailable, targetURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("vehicle resolver: %w: estado HTTP %d", domain.ErrVehicleUnavailable, resp.StatusCode)
+		slog.Error("falla al contactar vehicle", "url", targetURL, "error", fmt.Sprintf("estado HTTP %d", resp.StatusCode))
+		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: estado HTTP %d", domain.ErrVehicleUnavailable, targetURL, resp.StatusCode)
 	}
 
 	var parsed resolveOwnerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("vehicle resolver: %w: respuesta inválida: %v", domain.ErrVehicleUnavailable, err)
+		slog.Error("falla al contactar vehicle", "url", targetURL, "error", err.Error())
+		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: respuesta inválida: %v", domain.ErrVehicleUnavailable, targetURL, err)
 	}
 
 	ownerIDs := make([]uuid.UUID, 0, len(parsed.OwnerIDs))
 	for _, raw := range parsed.OwnerIDs {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return nil, fmt.Errorf("vehicle resolver: %w: owner_id inválido: %v", domain.ErrVehicleUnavailable, err)
+			slog.Error("falla al contactar vehicle", "url", targetURL, "error", err.Error())
+			return nil, fmt.Errorf("vehicle resolver: %w: url=%s: owner_id inválido: %v", domain.ErrVehicleUnavailable, targetURL, err)
 		}
 		ownerIDs = append(ownerIDs, id)
 	}

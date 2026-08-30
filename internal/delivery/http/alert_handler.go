@@ -2,7 +2,7 @@ package http
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -52,7 +52,7 @@ func (h *AlertHandler) CreateAlert(c *gin.Context) {
 		return
 	}
 
-	log.Printf("alerts handler: alerta recibida (issuer_id=%s, alert_type=%s)", issuerID, alertType)
+	slog.Info("alerts handler: alerta recibida", "issuer_id", issuerID, "alert_type", alertType)
 
 	err = h.service.Execute(c.Request.Context(), alert.CreateAlertInput{
 		IssuerID:  issuerID,
@@ -61,10 +61,11 @@ func (h *AlertHandler) CreateAlert(c *gin.Context) {
 	})
 	if err != nil {
 		if errors.Is(err, domain.ErrVehicleUnavailable) {
+			slog.Error("alerts handler: vehicle no disponible", "issuer_id", issuerID, "alert_type", alertType, "error", err.Error())
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "el servicio de vehículos no está disponible"})
 			return
 		}
-		log.Printf("create alert service: error interno (issuer_id=%s, alert_type=%s): %v", issuerID, alertType, err)
+		slog.Error("alerts handler: error interno", "issuer_id", issuerID, "alert_type", alertType, "error", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error interno"})
 		return
 	}

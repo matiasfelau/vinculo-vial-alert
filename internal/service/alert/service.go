@@ -5,7 +5,7 @@ package alert
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -81,8 +81,8 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 		OwnerIDs:  destinatarios,
 	}
 	if err := s.publisher.PublishAlertCreated(ctx, event); err != nil {
-		log.Printf("create alert service: error al publicar alert.created (issuer_id=%s, alert_type=%s): %v",
-			input.IssuerID, input.AlertType, err)
+		slog.Error("create alert service: falla al publicar en rabbitmq",
+			"issuer_id", input.IssuerID, "alert_type", input.AlertType, "error", err.Error())
 	}
 
 	return nil

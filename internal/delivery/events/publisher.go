@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,12 +70,15 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 		return fmt.Errorf("rabbitmq publisher: error al serializar el envelope: %w", err)
 	}
 
+	slog.Info("rabbitmq publisher: publicando alert.created", "exchange", p.exchange, "routing_key", routingKeyAlertCreated)
+
 	err = p.channel.PublishWithContext(ctx, p.exchange, routingKeyAlertCreated, false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        body,
 	})
 	if err != nil {
-		return fmt.Errorf("rabbitmq publisher: error al publicar el evento: %w", err)
+		slog.Error("falla al publicar en rabbitmq", "exchange", p.exchange, "routing_key", routingKeyAlertCreated, "error", err.Error())
+		return fmt.Errorf("rabbitmq publisher: error al publicar el evento en exchange=%s: %w", p.exchange, err)
 	}
 
 	return nil
