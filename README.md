@@ -16,6 +16,31 @@ anónimo del emisor y publica el evento `alert.created` en RabbitMQ.
 
 Copiar `.env.example` a `.env` y completar los valores según el entorno.
 
+## Infraestructura Docker
+
+Convención de nomenclatura obligatoria para toda la infraestructura del
+servicio, alineada con el resto del ecosistema Vínculo Vial:
+
+| Recurso                     | Nombre                    |
+|------------------------------|---------------------------|
+| Contenedor principal         | `vinculo-vial-alert`      |
+| Contenedor de base de datos  | `vinculo-vial-alert-db`   |
+| Red interna (alert ↔ DB)     | `alert-internal`          |
+| Red global del ecosistema    | `vinculo-vial` (externa)  |
+| Volumen de datos persistente | `vinculo-vial-alert-data` |
+
+`alert-db` solo pertenece a `alert-internal` y no publica su puerto en el
+host: ningún otro servicio ni proceso del host puede alcanzarlo
+directamente. `alert` se conecta además a `vinculo-vial`, la red puente
+compartida por Kong, RabbitMQ y el resto de los microservicios, declarada
+como externa porque la crea y gestiona otro repositorio de la
+infraestructura. Antes de levantar el stack localmente sin ese ecosistema
+disponible, crearla a mano:
+
+```
+docker network create vinculo-vial
+```
+
 ## Comandos
 
 ```
