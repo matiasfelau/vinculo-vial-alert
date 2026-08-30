@@ -6,11 +6,11 @@ services:
       - "${PORT:-8080}:${PORT:-8080}"
     environment:
       PORT: ${PORT:-8080}
-      DATABASE_URL: postgres://alert:alert@vinculo-vial-alert-db:5432/alert?sslmode=disable
-      VEHICLE_INTERNAL_URL: http://vinculo-vial-vehicle:8081
-      VEHICLE_TIMEOUT_MS: 2000
-      RABBITMQ_URL: amqp://guest:guest@vvi-rabbitmq:5672/
-      RABBITMQ_EXCHANGE: vvi.topic.exchange
+      DATABASE_URL: ${DATABASE_URL:-postgres://alert:alert@vinculo-vial-alert-db:5432/alert?sslmode=disable}
+      VEHICLE_INTERNAL_URL: ${VEHICLE_INTERNAL_URL:-http://vinculo-vial-vehicle:8081}
+      VEHICLE_TIMEOUT_MS: ${VEHICLE_TIMEOUT_MS:-2000}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@vinculo-vial-rabbitmq:5672/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-vvi.topic.exchange}
     depends_on:
       alert-db:
         condition: service_healthy

@@ -15,6 +15,19 @@ anónimo del emisor y publica el evento `alert.created` en RabbitMQ.
 ## Configuración
 
 Copiar `.env.example` a `.env` y completar los valores según el entorno.
+`.env` es la única fuente de verdad: `docker-compose.yml` toma cada
+variable de ahí (con el hostname de red Docker correspondiente como
+default si no está definida), así que alcanza con editar `.env` para
+que el cambio se refleje al levantar el stack — no hay valores
+duplicados ni hardcodeados en `docker-compose.yml`.
+
+Los valores por defecto de `.env.example` (`vinculo-vial-alert-db`,
+`vinculo-vial-vehicle`, `vinculo-vial-rabbitmq`) son hostnames de la red
+Docker del ecosistema, no `localhost`: `alert-db` está aislada de la red
+del host (ver "Infraestructura Docker") y ya no es alcanzable desde un
+`go run ./cmd/api` corrido fuera de Docker. Para ese flujo standalone,
+sobreescribir `DATABASE_URL` (y el resto de las URLs) apuntando a
+`localhost` con los puertos que tengas publicados.
 
 ## Infraestructura Docker
 
