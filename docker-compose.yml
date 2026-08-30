@@ -12,7 +12,8 @@ services:
       RABBITMQ_URL: amqp://guest:guest@vvi-rabbitmq:5672/
       RABBITMQ_EXCHANGE: vvi.topic.exchange
     depends_on:
-      - alert-db
+      alert-db:
+        condition: service_healthy
     networks:
       - alert-internal
       - vinculo-vial
@@ -24,6 +25,11 @@ services:
       POSTGRES_USER: alert
       POSTGRES_PASSWORD: alert
       POSTGRES_DB: alert
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alert -d alert"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     volumes:
       - vinculo-vial-alert-data:/var/lib/postgresql/data
     networks:
