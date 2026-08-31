@@ -140,6 +140,24 @@ func TestCreateAlert_CasoExitoso_Devuelve202(t *testing.T) {
 	}
 }
 
+func TestCreateAlert_JSONMalformado_Devuelve400SinLlamarAVehicle(t *testing.T) {
+	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
+	router := nuevoRouterDePrueba(&mockRepo{}, resolver, &mockPublisher{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts", bytes.NewReader([]byte("{no es json valido")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerUserID, uuid.New().String())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, se esperaba %d", rec.Code, http.StatusBadRequest)
+	}
+	if resolver.called {
+		t.Error("no debía llamarse a Vehicle con un JSON malformado")
+	}
+}
+
 func TestCreateAlert_OwnerIDsVacio_Devuelve202SinPublicar(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{}}
