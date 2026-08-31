@@ -42,6 +42,7 @@ func (h *AlertHandler) CreateAlert(c *gin.Context) {
 
 	var req createAlertRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		slog.Warn("payload inválido", "error", err.Error())
 		c.JSON(http.StatusBadRequest, gin.H{"error": "solicitud inválida"})
 		return
 	}
