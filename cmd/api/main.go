@@ -36,7 +36,7 @@ func main() {
 	defer rabbitChannel.Close()
 
 	repo := repopostgres.NewAlertRepository(db)
-	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout)
+	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout, cfg.InternalServiceToken)
 	publisher := deliveryevents.NewPublisher(rabbitChannel, cfg.RabbitMQExchange)
 
 	service := alertsvc.NewCreateAlertService(repo, vehicleClient, publisher)

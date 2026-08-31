@@ -17,11 +17,15 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-const resolveOwnerPath = "/internal/resolve-owner"
+const (
+	resolveOwnerPath        = "/internal/resolve-owner"
+	internalServiceTokenHdr = "X-Internal-Service-Token"
+)
 
 // Client resuelve los dueños de un vehículo contra vinculo-vial-vehicle.
 type Client struct {
 	baseURL    string
+	token      string
 	httpClient *http.Client
 }
 
@@ -29,10 +33,12 @@ var _ domain.OwnerResolver = (*Client)(nil)
 
 // NewClient construye un Client con el timeout explícito configurado.
 // El servicio no reintenta indefinidamente: una única solicitud, con
-// timeout total fijo.
-func NewClient(baseURL string, timeout time.Duration) *Client {
+// timeout total fijo. token es el secreto compartido de autenticación
+// interna que Vehicle exige en el endpoint RPC.
+func NewClient(baseURL string, timeout time.Duration, token string) *Client {
 	return &Client{
 		baseURL: baseURL,
+		token:   token,
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
@@ -65,6 +71,7 @@ func (c *Client) ResolveOwners(ctx context.Context, patEnc string) ([]uuid.UUID,
 		return nil, fmt.Errorf("vehicle resolver: error al construir la solicitud: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(internalServiceTokenHdr, c.token)
 
 	slog.Info("vehicle resolver: consultando resolve-owner", "url", targetURL)
 

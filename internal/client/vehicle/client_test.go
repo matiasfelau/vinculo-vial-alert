@@ -14,6 +14,8 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
+const tokenDePrueba = "token-secreto-de-prueba"
+
 func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 	ownerA := uuid.New()
 	ownerB := uuid.New()
@@ -22,6 +24,9 @@ func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != resolveOwnerPath {
 			t.Errorf("path inesperado: %s", r.URL.Path)
+		}
+		if got := r.Header.Get(internalServiceTokenHdr); got != tokenDePrueba {
+			t.Errorf("header %s = %q, se esperaba %q", internalServiceTokenHdr, got, tokenDePrueba)
 		}
 
 		var body resolveOwnerRequest
@@ -37,7 +42,7 @@ func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, time.Second)
+	client := NewClient(server.URL, time.Second, tokenDePrueba)
 	owners, err := client.ResolveOwners(context.Background(), patEncEsperado)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -54,7 +59,7 @@ func TestClient_ResolveOwners_VacioCuandoNoHayDuenos(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, time.Second)
+	client := NewClient(server.URL, time.Second, tokenDePrueba)
 	owners, err := client.ResolveOwners(context.Background(), "x")
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -71,7 +76,7 @@ func TestClient_ResolveOwners_TimeoutDevuelveErrVehicleUnavailable(t *testing.T)
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, 5*time.Millisecond)
+	client := NewClient(server.URL, 5*time.Millisecond, tokenDePrueba)
 	_, err := client.ResolveOwners(context.Background(), "x")
 	if !errors.Is(err, domain.ErrVehicleUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable", err)
@@ -84,7 +89,7 @@ func TestClient_ResolveOwners_ErrorDelServidorDevuelveErrVehicleUnavailable(t *t
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, time.Second)
+	client := NewClient(server.URL, time.Second, tokenDePrueba)
 	_, err := client.ResolveOwners(context.Background(), "x")
 	if !errors.Is(err, domain.ErrVehicleUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable", err)
@@ -92,9 +97,27 @@ func TestClient_ResolveOwners_ErrorDelServidorDevuelveErrVehicleUnavailable(t *t
 }
 
 func TestClient_ResolveOwners_ServidorInalcanzable(t *testing.T) {
-	client := NewClient("http://127.0.0.1:1", time.Second)
+	client := NewClient("http://127.0.0.1:1", time.Second, tokenDePrueba)
 	_, err := client.ResolveOwners(context.Background(), "x")
 	if !errors.Is(err, domain.ErrVehicleUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable", err)
+	}
+}
+
+func TestClient_ResolveOwners_RechazoPorAutenticacion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(internalServiceTokenHdr) != tokenDePrueba {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resolveOwnerResponse{OwnerIDs: []string{}})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, time.Second, "token-incorrecto")
+	_, err := client.ResolveOwners(context.Background(), "x")
+	if !errors.Is(err, domain.ErrVehicleUnavailable) {
+		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable ante un 401", err)
 	}
 }
