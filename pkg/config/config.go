@@ -11,30 +11,33 @@ import (
 
 // Config agrupa los parámetros de configuración requeridos por el servicio.
 type Config struct {
-	Port               string
-	DatabaseURL        string
-	VehicleInternalURL string
-	VehicleTimeout     time.Duration
-	RabbitMQURL        string
-	RabbitMQExchange   string
+	Port                 string
+	DatabaseURL          string
+	VehicleInternalURL   string
+	VehicleTimeout       time.Duration
+	InternalServiceToken string
+	RabbitMQURL          string
+	RabbitMQExchange     string
 }
 
 // Load construye la configuración a partir de variables de entorno.
 // Retorna error si falta alguna variable obligatoria o si su formato es inválido.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:               getEnvDefault("PORT", "8080"),
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		VehicleInternalURL: os.Getenv("VEHICLE_INTERNAL_URL"),
-		RabbitMQURL:        os.Getenv("RABBITMQ_URL"),
-		RabbitMQExchange:   os.Getenv("RABBITMQ_EXCHANGE"),
+		Port:                 getEnvDefault("PORT", "8080"),
+		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		VehicleInternalURL:   os.Getenv("VEHICLE_INTERNAL_URL"),
+		InternalServiceToken: os.Getenv("INTERNAL_SERVICE_TOKEN"),
+		RabbitMQURL:          os.Getenv("RABBITMQ_URL"),
+		RabbitMQExchange:     os.Getenv("RABBITMQ_EXCHANGE"),
 	}
 
 	required := map[string]string{
-		"DATABASE_URL":         cfg.DatabaseURL,
-		"VEHICLE_INTERNAL_URL": cfg.VehicleInternalURL,
-		"RABBITMQ_URL":         cfg.RabbitMQURL,
-		"RABBITMQ_EXCHANGE":    cfg.RabbitMQExchange,
+		"DATABASE_URL":           cfg.DatabaseURL,
+		"VEHICLE_INTERNAL_URL":   cfg.VehicleInternalURL,
+		"INTERNAL_SERVICE_TOKEN": cfg.InternalServiceToken,
+		"RABBITMQ_URL":           cfg.RabbitMQURL,
+		"RABBITMQ_EXCHANGE":      cfg.RabbitMQExchange,
 	}
 	for key, value := range required {
 		if value == "" {
