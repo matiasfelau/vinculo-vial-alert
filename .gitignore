@@ -1,0 +1,23 @@
+# Instrucciones de agente (no versionar)
+CLAUDE.md
+.clauderules
+
+# Binarios
+/alert
+/bin/
+*.exe
+*.test
+
+# Variables de entorno
+.env
+
+# Go
+vendor/
+
+# IDE
+.vscode/
+.idea/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

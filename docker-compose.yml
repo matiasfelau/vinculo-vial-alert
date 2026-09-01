@@ -1,0 +1,54 @@
+services:
+  alert:
+    build: .
+    container_name: vinculo-vial-alert
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    environment:
+      PORT: ${PORT:-8080}
+      DATABASE_URL: ${DATABASE_URL:-postgres://alert:alert@vinculo-vial-alert-db:5432/alert?sslmode=disable}
+      VEHICLE_INTERNAL_URL: ${VEHICLE_INTERNAL_URL:-http://vinculo-vial-vehicle:8081}
+      VEHICLE_TIMEOUT_MS: ${VEHICLE_TIMEOUT_MS:-2000}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?la variable INTERNAL_SERVICE_TOKEN es obligatoria en .env}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@vinculo-vial-rabbitmq:5672/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-vvi.topic.exchange}
+    depends_on:
+      alert-db:
+        condition: service_healthy
+    networks:
+      - alert-internal
+      - vinculo-vial
+
+  alert-db:
+    image: postgres:16-alpine
+    container_name: vinculo-vial-alert-db
+    environment:
+      POSTGRES_USER: alert
+      POSTGRES_PASSWORD: alert
+      POSTGRES_DB: alert
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alert -d alert"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - vinculo-vial-alert-data:/var/lib/postgresql/data
+    networks:
+      - alert-internal
+
+volumes:
+  vinculo-vial-alert-data:
+    name: vinculo-vial-alert-data
+
+networks:
+  # Red interna exclusiva del servicio: aisla el tráfico hacia alert-db,
+  # nadie fuera de ella puede alcanzar la base de datos.
+  alert-internal:
+    name: alert-internal
+    driver: bridge
+  # Red puente compartida por todo el ecosistema (Kong, RabbitMQ y el
+  # resto de los microservicios). La declara y publica otro repo; acá
+  # solo se referencia como externa.
+  vinculo-vial:
+    name: vinculo-vial
+    external: true
