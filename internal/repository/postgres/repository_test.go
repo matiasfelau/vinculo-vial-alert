@@ -88,7 +88,7 @@ func TestAlertRepository_Create_PersisteSoloIssuerIDYAlertType(t *testing.T) {
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 	}
 
-	if err := repo.Create(context.Background(), alert); err != nil {
+	if err := repo.Create(context.Background(), alert, nil); err != nil {
 		t.Fatalf("Create devolvió error inesperado: %v", err)
 	}
 
@@ -154,6 +154,102 @@ func TestAlertDestinationModel_ColumnasExactas(t *testing.T) {
 		if !esperadas[c] {
 			t.Errorf("columna inesperada en alert_destinations: %s", c)
 		}
+	}
+}
+
+func TestAlertRepository_Create_PersisteDestinatariosEnLaMismaTransaccion(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+	ownerA := uuid.New()
+	ownerB := uuid.New()
+
+	if err := repo.Create(context.Background(), alert, []uuid.UUID{ownerA, ownerB}); err != nil {
+		t.Fatalf("Create devolvió error inesperado: %v", err)
+	}
+
+	var owners []uuid.UUID
+	if err := db.Table("alert_destinations").
+		Where("alert_id = ?", alert.ID).
+		Pluck("owner_id", &owners).Error; err != nil {
+		t.Fatalf("no se pudieron leer los destinatarios persistidos: %v", err)
+	}
+
+	esperados := map[uuid.UUID]bool{ownerA: true, ownerB: true}
+	if len(owners) != len(esperados) {
+		t.Fatalf("destinatarios persistidos = %v, se esperaban %v", owners, esperados)
+	}
+	for _, o := range owners {
+		if !esperados[o] {
+			t.Errorf("destinatario inesperado persistido: %v", o)
+		}
+	}
+}
+
+func TestAlertRepository_Create_SinDestinatarios_PersisteSoloLaAlerta(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	if err := repo.Create(context.Background(), alert, nil); err != nil {
+		t.Fatalf("Create devolvió error inesperado: %v", err)
+	}
+
+	var destinos int64
+	if err := db.Table("alert_destinations").Where("alert_id = ?", alert.ID).Count(&destinos).Error; err != nil {
+		t.Fatalf("no se pudo consultar alert_destinations: %v", err)
+	}
+	if destinos != 0 {
+		t.Errorf("se esperaban 0 destinatarios, se persistieron %d", destinos)
+	}
+}
+
+func TestAlertRepository_Create_RollbackSiFallaInsertDeDestinos(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+	// El mismo owner_id repetido viola el índice único (owner_id, alert_id)
+	// de alert_destinations: fuerza el fallo del segundo INSERT dentro de
+	// la transacción.
+	ownerDuplicado := uuid.New()
+
+	err := repo.Create(context.Background(), alert, []uuid.UUID{ownerDuplicado, ownerDuplicado})
+	if err == nil {
+		t.Fatal("se esperaba error por violación del índice único de alert_destinations")
+	}
+
+	var alertas int64
+	if err := db.Table("alerts").Where("id = ?", alert.ID).Count(&alertas).Error; err != nil {
+		t.Fatalf("no se pudo consultar alerts: %v", err)
+	}
+	if alertas != 0 {
+		t.Error("la alerta no debía quedar persistida: el fallo al insertar destinos debe revertir toda la transacción")
+	}
+
+	var destinos int64
+	if err := db.Table("alert_destinations").Where("alert_id = ?", alert.ID).Count(&destinos).Error; err != nil {
+		t.Fatalf("no se pudo consultar alert_destinations: %v", err)
+	}
+	if destinos != 0 {
+		t.Error("no debía quedar ningún destinatario persistido tras el rollback")
 	}
 }
 

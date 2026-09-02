@@ -59,7 +59,7 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if err := s.repo.Create(ctx, alertHistory); err != nil {
+	if err := s.repo.Create(ctx, alertHistory, destinatarios); err != nil {
 		return fmt.Errorf("create alert service: error al persistir el historial: %w", err)
 	}
 

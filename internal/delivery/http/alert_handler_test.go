@@ -16,12 +16,14 @@ import (
 )
 
 type mockRepo struct {
-	created *domain.AlertHistory
-	err     error
+	created             *domain.AlertHistory
+	createdDestinations []uuid.UUID
+	err                 error
 }
 
-func (m *mockRepo) Create(ctx context.Context, a *domain.AlertHistory) error {
+func (m *mockRepo) Create(ctx context.Context, a *domain.AlertHistory, destinationOwnerIDs []uuid.UUID) error {
 	m.created = a
+	m.createdDestinations = destinationOwnerIDs
 	return m.err
 }
 
