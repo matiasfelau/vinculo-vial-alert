@@ -11,12 +11,14 @@ import (
 )
 
 type mockRepo struct {
-	created *domain.AlertHistory
-	err     error
+	created             *domain.AlertHistory
+	createdDestinations []uuid.UUID
+	err                 error
 }
 
-func (m *mockRepo) Create(ctx context.Context, alert *domain.AlertHistory) error {
+func (m *mockRepo) Create(ctx context.Context, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID) error {
 	m.created = alert
+	m.createdDestinations = destinationOwnerIDs
 	return m.err
 }
 
@@ -84,6 +86,9 @@ func TestExecute_OwnerIDsVacio_PersisteYNoPublica(t *testing.T) {
 	if repo.created.IssuerID != issuerID {
 		t.Errorf("issuer_id persistido = %v, se esperaba %v", repo.created.IssuerID, issuerID)
 	}
+	if len(repo.createdDestinations) != 0 {
+		t.Errorf("destinatarios persistidos = %v, se esperaba ninguno", repo.createdDestinations)
+	}
 	if publisher.called {
 		t.Error("no debía publicarse un evento sin destinatarios")
 	}
@@ -115,6 +120,14 @@ func TestExecute_IssuerEntreLosDuenos_SeFiltraAntesDePublicar(t *testing.T) {
 			t.Error("el emisor no debe recibir su propia alerta")
 		}
 	}
+	if len(repo.createdDestinations) != 1 || repo.createdDestinations[0] != otroOwner {
+		t.Errorf("destinatarios persistidos = %v, se esperaba solo [%v]", repo.createdDestinations, otroOwner)
+	}
+	for _, id := range repo.createdDestinations {
+		if id == issuerID {
+			t.Error("el emisor no debe persistirse como destinatario de su propia alerta")
+		}
+	}
 }
 
 func TestExecute_IssuerEsUnicoDueno_TrasFiltrarNoPublica(t *testing.T) {
@@ -133,6 +146,9 @@ func TestExecute_IssuerEsUnicoDueno_TrasFiltrarNoPublica(t *testing.T) {
 	}
 	if repo.created == nil {
 		t.Fatal("debía persistirse el historial")
+	}
+	if len(repo.createdDestinations) != 0 {
+		t.Errorf("destinatarios persistidos = %v, se esperaba ninguno tras filtrar al emisor", repo.createdDestinations)
 	}
 	if publisher.called {
 		t.Error("no debía publicarse un evento sin destinatarios tras filtrar al emisor")

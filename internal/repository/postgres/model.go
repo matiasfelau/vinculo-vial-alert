@@ -24,10 +24,14 @@ func (AlertModel) TableName() string {
 // AlertDestinationModel es la representación GORM de la tabla
 // alert_destinations: un destinatario (owner_id) de una alerta. El
 // issuer_id de la alerta nunca se desnormaliza acá.
+//
+// El índice compuesto (owner_id, alert_id) es único: un owner_id no puede
+// figurar dos veces como destinatario de la misma alerta. Sin esa garantía,
+// el JOIN del inbox devolvería la alerta duplicada para ese destinatario.
 type AlertDestinationModel struct {
 	ID      uuid.UUID  `gorm:"type:uuid;primaryKey"`
-	AlertID uuid.UUID  `gorm:"type:uuid;not null;index:idx_alert_destinations_owner_alert,priority:2"`
-	OwnerID uuid.UUID  `gorm:"type:uuid;not null;index:idx_alert_destinations_owner_alert,priority:1"`
+	AlertID uuid.UUID  `gorm:"type:uuid;not null;uniqueIndex:idx_alert_destinations_owner_alert,priority:2"`
+	OwnerID uuid.UUID  `gorm:"type:uuid;not null;uniqueIndex:idx_alert_destinations_owner_alert,priority:1"`
 	Alert   AlertModel `gorm:"foreignKey:AlertID;references:ID;constraint:OnDelete:CASCADE"`
 }
 
