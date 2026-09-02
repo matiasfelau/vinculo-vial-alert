@@ -6,17 +6,32 @@ import (
 	"github.com/google/uuid"
 )
 
-// AlertHistoryModel es la representación GORM de la tabla alert_history.
-// Deliberadamente no incluye pat_enc ni owner_ids: la tabla es historial
-// del emisor para auditoría y anti-abuso, nunca del contenido de la alerta.
-type AlertHistoryModel struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
+// AlertModel es la representación GORM de la tabla alerts.
+// Deliberadamente no incluye pat_enc: la tabla registra al emisor y el
+// motivo de la alerta, nunca la patente ni su criptograma.
+type AlertModel struct {
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey;index:idx_alerts_created_at_id,priority:2,sort:desc"`
 	IssuerID  uuid.UUID `gorm:"type:uuid;index;not null"`
 	AlertType string    `gorm:"column:alert_type;type:varchar(64);not null"`
-	CreatedAt time.Time `gorm:"type:timestamptz;not null"`
+	CreatedAt time.Time `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc"`
 }
 
 // TableName fija el nombre de tabla explícito.
-func (AlertHistoryModel) TableName() string {
-	return "alert_history"
+func (AlertModel) TableName() string {
+	return "alerts"
+}
+
+// AlertDestinationModel es la representación GORM de la tabla
+// alert_destinations: un destinatario (owner_id) de una alerta. El
+// issuer_id de la alerta nunca se desnormaliza acá.
+type AlertDestinationModel struct {
+	ID      uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	AlertID uuid.UUID  `gorm:"type:uuid;not null;index:idx_alert_destinations_owner_alert,priority:2"`
+	OwnerID uuid.UUID  `gorm:"type:uuid;not null;index:idx_alert_destinations_owner_alert,priority:1"`
+	Alert   AlertModel `gorm:"foreignKey:AlertID;references:ID;constraint:OnDelete:CASCADE"`
+}
+
+// TableName fija el nombre de tabla explícito.
+func (AlertDestinationModel) TableName() string {
+	return "alert_destinations"
 }
