@@ -13,6 +13,7 @@ import (
 
 	"vinculo-vial-alert/internal/domain"
 	"vinculo-vial-alert/internal/service/alert"
+	"vinculo-vial-alert/internal/service/inbox"
 )
 
 type mockRepo struct {
@@ -51,8 +52,9 @@ func (m *mockPublisher) PublishAlertCreated(ctx context.Context, event domain.Al
 func nuevoRouterDePrueba(repo *mockRepo, resolver *mockResolver, publisher *mockPublisher) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	svc := alert.NewCreateAlertService(repo, resolver, publisher)
-	handler := NewAlertHandler(svc)
-	return NewRouter(handler)
+	alertHandler := NewAlertHandler(svc)
+	inboxHandler := NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{}))
+	return NewRouter(alertHandler, inboxHandler)
 }
 
 func realizarSolicitud(router *gin.Engine, headers map[string]string, body interface{}) *httptest.ResponseRecorder {

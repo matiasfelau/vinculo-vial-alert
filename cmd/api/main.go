@@ -11,6 +11,7 @@ import (
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
+	inboxsvc "vinculo-vial-alert/internal/service/inbox"
 	"vinculo-vial-alert/pkg/config"
 )
 
@@ -36,12 +37,15 @@ func main() {
 	defer rabbitChannel.Close()
 
 	repo := repopostgres.NewAlertRepository(db)
+	inboxRepo := repopostgres.NewInboxRepository(db)
 	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout, cfg.InternalServiceToken)
 	publisher := deliveryevents.NewPublisher(rabbitChannel, cfg.RabbitMQExchange)
 
 	service := alertsvc.NewCreateAlertService(repo, vehicleClient, publisher)
+	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
-	router := deliveryhttp.NewRouter(alertHandler)
+	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
+	router := deliveryhttp.NewRouter(alertHandler, inboxHandler)
 
 	if err := router.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("error al iniciar el servidor HTTP: %v", err)
