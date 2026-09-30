@@ -25,6 +25,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("error al conectar con la base de datos: %v", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("error al obtener el *sql.DB subyacente: %v", err)
+	}
 	if err := repopostgres.AutoMigrate(db); err != nil {
 		log.Fatalf("error al migrar el esquema: %v", err)
 	}
@@ -44,8 +48,9 @@ func main() {
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
-	healthHandler := deliveryhttp.NewHealthHandler(rabbitConn)
-	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler)
+	healthHandler := deliveryhttp.NewHealthHandler()
+	readyHandler := deliveryhttp.NewReadyHandler(sqlDB, rabbitConn)
+	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler)
 
 	if err := router.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("error al iniciar el servidor HTTP: %v", err)
