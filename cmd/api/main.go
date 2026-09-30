@@ -6,6 +6,7 @@ import (
 	gormpostgres "gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	"vinculo-vial-alert/internal/circuitbreaker"
 	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
@@ -39,9 +40,14 @@ func main() {
 	repo := repopostgres.NewAlertRepository(db)
 	inboxRepo := repopostgres.NewInboxRepository(db)
 	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout, cfg.InternalServiceToken)
+	vehicleBreaker := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: cfg.VehicleBreakerFailureThreshold,
+		OpenDuration:     cfg.VehicleBreakerOpenDuration,
+	})
+	vehicleResolver := vehicle.NewBreakerResolver(vehicleClient, vehicleBreaker)
 	publisher := deliveryevents.NewPublisher(rabbitChannel, cfg.RabbitMQExchange)
 
-	service := alertsvc.NewCreateAlertService(repo, vehicleClient, publisher)
+	service := alertsvc.NewCreateAlertService(repo, vehicleResolver, publisher)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)

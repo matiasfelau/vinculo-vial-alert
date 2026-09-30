@@ -11,13 +11,15 @@ import (
 
 // Config agrupa los parámetros de configuración requeridos por el servicio.
 type Config struct {
-	Port                 string
-	DatabaseURL          string
-	VehicleInternalURL   string
-	VehicleTimeout       time.Duration
-	InternalServiceToken string
-	RabbitMQURL          string
-	RabbitMQExchange     string
+	Port                           string
+	DatabaseURL                    string
+	VehicleInternalURL             string
+	VehicleTimeout                 time.Duration
+	VehicleBreakerFailureThreshold int
+	VehicleBreakerOpenDuration     time.Duration
+	InternalServiceToken           string
+	RabbitMQURL                    string
+	RabbitMQExchange               string
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -50,6 +52,18 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("VEHICLE_TIMEOUT_MS inválido: %w", err)
 	}
 	cfg.VehicleTimeout = time.Duration(timeoutMS) * time.Millisecond
+
+	breakerThreshold, err := strconv.Atoi(getEnvDefault("VEHICLE_BREAKER_FAILURE_THRESHOLD", "5"))
+	if err != nil {
+		return Config{}, fmt.Errorf("VEHICLE_BREAKER_FAILURE_THRESHOLD inválido: %w", err)
+	}
+	cfg.VehicleBreakerFailureThreshold = breakerThreshold
+
+	breakerOpenMS, err := strconv.Atoi(getEnvDefault("VEHICLE_BREAKER_OPEN_DURATION_MS", "30000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("VEHICLE_BREAKER_OPEN_DURATION_MS inválido: %w", err)
+	}
+	cfg.VehicleBreakerOpenDuration = time.Duration(breakerOpenMS) * time.Millisecond
 
 	return cfg, nil
 }
