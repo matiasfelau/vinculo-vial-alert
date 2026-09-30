@@ -66,6 +66,11 @@ func (h *AlertHandler) CreateAlert(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "el servicio de vehículos no está disponible"})
 			return
 		}
+		if errors.Is(err, domain.ErrVehicleBadResponse) || errors.Is(err, domain.ErrVehicleRejected) {
+			slog.Error("alerts handler: vehicle devolvió un error", "issuer_id", issuerID, "alert_type", alertType, "error", err.Error())
+			c.JSON(http.StatusBadGateway, gin.H{"error": "el servicio de vehículos no pudo procesar la solicitud"})
+			return
+		}
 		slog.Error("alerts handler: error interno", "issuer_id", issuerID, "alert_type", alertType, "error", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error interno"})
 		return

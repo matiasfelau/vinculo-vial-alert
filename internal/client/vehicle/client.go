@@ -54,10 +54,16 @@ type resolveOwnerResponse struct {
 }
 
 // ResolveOwners implementa domain.OwnerResolver: reenvía pat_enc sin abrirlo
-// y traduce la respuesta a UUIDs. Cualquier falla de red, timeout, estado
-// HTTP distinto de 200 o respuesta malformada se reporta como
-// domain.ErrVehicleUnavailable, para que el caso de uso responda 503 sin
-// persistir ni publicar.
+// y traduce la respuesta a UUIDs. El error devuelto distingue tres causas
+// para que el caso de uso pueda mapear el código HTTP correcto y, a futuro,
+// alimentar un circuit breaker que no confunda una caída propia con un
+// rechazo del upstream:
+//   - domain.ErrVehicleUnavailable: falla de red, timeout o servidor
+//     inalcanzable (la conexión no llegó a completarse).
+//   - domain.ErrVehicleBadResponse: la conexión funcionó pero el upstream
+//     respondió 5xx, o con un cuerpo inválido/no decodificable.
+//   - domain.ErrVehicleRejected: el upstream respondió 4xx. Es un error de
+//     configuración o de negocio propio, no una caída de Vehicle.
 func (c *Client) ResolveOwners(ctx context.Context, patEnc string) ([]uuid.UUID, error) {
 	body, err := json.Marshal(resolveOwnerRequest{PatEnc: patEnc})
 	if err != nil {
@@ -82,23 +88,32 @@ func (c *Client) ResolveOwners(ctx context.Context, patEnc string) ([]uuid.UUID,
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		slog.Error("falla al contactar vehicle", "url", targetURL, "error", fmt.Sprintf("estado HTTP %d", resp.StatusCode))
-		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: estado HTTP %d", domain.ErrVehicleUnavailable, targetURL, resp.StatusCode)
+	switch {
+	case resp.StatusCode >= http.StatusInternalServerError:
+		slog.Error("vehicle respondió con error de servidor", "url", targetURL, "estado_http", resp.StatusCode)
+		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: estado HTTP %d", domain.ErrVehicleBadResponse, targetURL, resp.StatusCode)
+	case resp.StatusCode >= http.StatusBadRequest:
+		slog.Error("vehicle rechazó la solicitud", "url", targetURL, "estado_http", resp.StatusCode)
+		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: estado HTTP %d", domain.ErrVehicleRejected, targetURL, resp.StatusCode)
+	case resp.StatusCode != http.StatusOK:
+		// 1xx/3xx inesperado: el cliente HTTP sigue redirects por default,
+		// así que llegar acá ya es una respuesta fuera de contrato.
+		slog.Error("vehicle respondió con un estado inesperado", "url", targetURL, "estado_http", resp.StatusCode)
+		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: estado HTTP %d", domain.ErrVehicleBadResponse, targetURL, resp.StatusCode)
 	}
 
 	var parsed resolveOwnerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		slog.Error("falla al contactar vehicle", "url", targetURL, "error", err.Error())
-		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: respuesta inválida: %v", domain.ErrVehicleUnavailable, targetURL, err)
+		slog.Error("vehicle respondió con un cuerpo inválido", "url", targetURL, "error", err.Error())
+		return nil, fmt.Errorf("vehicle resolver: %w: url=%s: respuesta inválida: %v", domain.ErrVehicleBadResponse, targetURL, err)
 	}
 
 	ownerIDs := make([]uuid.UUID, 0, len(parsed.OwnerIDs))
 	for _, raw := range parsed.OwnerIDs {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			slog.Error("falla al contactar vehicle", "url", targetURL, "error", err.Error())
-			return nil, fmt.Errorf("vehicle resolver: %w: url=%s: owner_id inválido: %v", domain.ErrVehicleUnavailable, targetURL, err)
+			slog.Error("vehicle respondió con un owner_id inválido", "url", targetURL, "error", err.Error())
+			return nil, fmt.Errorf("vehicle resolver: %w: url=%s: owner_id inválido: %v", domain.ErrVehicleBadResponse, targetURL, err)
 		}
 		ownerIDs = append(ownerIDs, id)
 	}

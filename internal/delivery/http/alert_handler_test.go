@@ -118,6 +118,50 @@ func TestCreateAlert_VehicleNoDisponible_Devuelve503(t *testing.T) {
 	}
 }
 
+func TestCreateAlert_VehicleRespondeErrorDeServidor_Devuelve502(t *testing.T) {
+	repo := &mockRepo{}
+	resolver := &mockResolver{err: domain.ErrVehicleBadResponse}
+	publisher := &mockPublisher{}
+	router := nuevoRouterDePrueba(repo, resolver, publisher)
+
+	rec := realizarSolicitud(router,
+		map[string]string{headerUserID: uuid.New().String()},
+		map[string]string{"alert_type": "CRASHED", "pat_enc": "x"},
+	)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, se esperaba %d", rec.Code, http.StatusBadGateway)
+	}
+	if repo.created != nil {
+		t.Error("no debía persistirse si Vehicle respondió con un error")
+	}
+	if publisher.called {
+		t.Error("no debía publicarse si Vehicle respondió con un error")
+	}
+}
+
+func TestCreateAlert_VehicleRechazaLaSolicitud_Devuelve502SinConfundirloConIndisponibilidad(t *testing.T) {
+	repo := &mockRepo{}
+	resolver := &mockResolver{err: domain.ErrVehicleRejected}
+	publisher := &mockPublisher{}
+	router := nuevoRouterDePrueba(repo, resolver, publisher)
+
+	rec := realizarSolicitud(router,
+		map[string]string{headerUserID: uuid.New().String()},
+		map[string]string{"alert_type": "CRASHED", "pat_enc": "x"},
+	)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, se esperaba %d", rec.Code, http.StatusBadGateway)
+	}
+	if repo.created != nil {
+		t.Error("no debía persistirse si Vehicle rechazó la solicitud")
+	}
+	if publisher.called {
+		t.Error("no debía publicarse si Vehicle rechazó la solicitud")
+	}
+}
+
 func TestCreateAlert_CasoExitoso_Devuelve202(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
