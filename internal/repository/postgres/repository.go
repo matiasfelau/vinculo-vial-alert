@@ -23,6 +23,9 @@ func NewAlertRepository(db *gorm.DB) *AlertRepository {
 // Create persiste la alerta y sus destinatarios en una única transacción:
 // si falla el INSERT de alert_destinations, no debe quedar la alerta huérfana.
 func (r *AlertRepository) Create(ctx context.Context, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
 	model := toModel(alert)
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

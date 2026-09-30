@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -11,13 +12,17 @@ import (
 
 // Config agrupa los parámetros de configuración requeridos por el servicio.
 type Config struct {
-	Port                 string
-	DatabaseURL          string
-	VehicleInternalURL   string
-	VehicleTimeout       time.Duration
-	InternalServiceToken string
-	RabbitMQURL          string
-	RabbitMQExchange     string
+	Port                   string
+	DatabaseURL            string
+	DBMaxOpenConns         int
+	VehicleInternalURL     string
+	VehicleTimeout         time.Duration
+	InternalServiceToken   string
+	RabbitMQURL            string
+	RabbitMQExchange       string
+	RabbitMQPublishTimeout time.Duration
+	HTTPReadTimeout        time.Duration
+	HTTPWriteTimeout       time.Duration
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -51,6 +56,39 @@ func Load() (Config, error) {
 	}
 	cfg.VehicleTimeout = time.Duration(timeoutMS) * time.Millisecond
 
+	dbMaxOpenConns, err := strconv.Atoi(getEnvDefault("DB_MAX_OPEN_CONNS", "20"))
+	if err != nil {
+		return Config{}, fmt.Errorf("DB_MAX_OPEN_CONNS inválido: %w", err)
+	}
+	cfg.DBMaxOpenConns = dbMaxOpenConns
+
+	dbStatementTimeoutMS, err := strconv.Atoi(getEnvDefault("DB_STATEMENT_TIMEOUT_MS", "3000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("DB_STATEMENT_TIMEOUT_MS inválido: %w", err)
+	}
+	cfg.DatabaseURL, err = withStatementTimeout(cfg.DatabaseURL, dbStatementTimeoutMS)
+	if err != nil {
+		return Config{}, fmt.Errorf("DATABASE_URL inválida: %w", err)
+	}
+
+	httpReadTimeoutMS, err := strconv.Atoi(getEnvDefault("HTTP_READ_TIMEOUT_MS", "5000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("HTTP_READ_TIMEOUT_MS inválido: %w", err)
+	}
+	cfg.HTTPReadTimeout = time.Duration(httpReadTimeoutMS) * time.Millisecond
+
+	httpWriteTimeoutMS, err := strconv.Atoi(getEnvDefault("HTTP_WRITE_TIMEOUT_MS", "10000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("HTTP_WRITE_TIMEOUT_MS inválido: %w", err)
+	}
+	cfg.HTTPWriteTimeout = time.Duration(httpWriteTimeoutMS) * time.Millisecond
+
+	rabbitPublishTimeoutMS, err := strconv.Atoi(getEnvDefault("RABBITMQ_PUBLISH_TIMEOUT_MS", "2000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("RABBITMQ_PUBLISH_TIMEOUT_MS inválido: %w", err)
+	}
+	cfg.RabbitMQPublishTimeout = time.Duration(rabbitPublishTimeoutMS) * time.Millisecond
+
 	return cfg, nil
 }
 
@@ -59,4 +97,22 @@ func getEnvDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// withStatementTimeout agrega (o reemplaza) el parámetro statement_timeout
+// en el DSN de PostgreSQL. pgx trata los parámetros no reconocidos de la
+// cadena de conexión como parámetros de sesión (equivalente a un SET tras
+// conectar), por lo que alcanza con incluirlo en la URL: statement_timeout
+// aborta del lado del servidor cualquier sentencia que exceda el límite,
+// protegiendo contra una consulta colgada aunque el cliente Go no consulte
+// su propio contexto.
+func withStatementTimeout(dsn string, timeoutMS int) (string, error) {
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		return "", err
+	}
+	query := parsed.Query()
+	query.Set("statement_timeout", strconv.Itoa(timeoutMS))
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }

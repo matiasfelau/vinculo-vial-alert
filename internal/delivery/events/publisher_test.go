@@ -31,7 +31,7 @@ func (m *mockChannel) PublishWithContext(ctx context.Context, exchange, key stri
 
 func TestPublisher_PublishAlertCreated_RespetaEnvelopeEstandar(t *testing.T) {
 	mock := &mockChannel{}
-	publisher := NewPublisher(mock, "vvi.topic.exchange")
+	publisher := NewPublisher(mock, "vvi.topic.exchange", time.Second)
 
 	issuerID := uuid.New()
 	ownerA := uuid.New()
@@ -95,7 +95,7 @@ func TestPublisher_PublishAlertCreated_RespetaEnvelopeEstandar(t *testing.T) {
 
 func TestPublisher_PublishAlertCreated_PropagaErrorDelCanal(t *testing.T) {
 	mock := &mockChannel{err: errors.New("canal cerrado")}
-	publisher := NewPublisher(mock, "vvi.topic.exchange")
+	publisher := NewPublisher(mock, "vvi.topic.exchange", time.Second)
 
 	err := publisher.PublishAlertCreated(context.Background(), domain.AlertCreatedEvent{
 		IssuerID:  uuid.New(),
