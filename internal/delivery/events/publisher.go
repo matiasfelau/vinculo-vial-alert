@@ -73,8 +73,9 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 	slog.Info("rabbitmq publisher: publicando alert.created", "exchange", p.exchange, "routing_key", routingKeyAlertCreated)
 
 	err = p.channel.PublishWithContext(ctx, p.exchange, routingKeyAlertCreated, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        body,
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		Body:         body,
 	})
 	if err != nil {
 		slog.Error("falla al publicar en rabbitmq", "exchange", p.exchange, "routing_key", routingKeyAlertCreated, "error", err.Error())
