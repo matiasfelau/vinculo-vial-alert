@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -96,6 +97,30 @@ func TestAlertRepository_Create_RespetaContextoYaVencidoDelLlamador(t *testing.T
 
 	if err := repo.Create(ctx, alert, nil); err == nil {
 		t.Fatal("se esperaba error al persistir con un contexto ya cancelado")
+	}
+}
+
+func TestAlertRepository_Create_DeadlineVencido_ClasificaComoErrDatabaseUnavailable(t *testing.T) {
+	// A diferencia de un contexto cancelado (context.Canceled), un deadline
+	// vencido (context.DeadlineExceeded) sí debe clasificarse como
+	// ErrDatabaseUnavailable según la sección Postgres del contrato de
+	// resiliencia, para que el handler lo mapee a 503.
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	err := repo.Create(ctx, alert, nil)
+	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
+		t.Fatalf("error = %v, se esperaba que envolviera ErrDatabaseUnavailable", err)
 	}
 }
 

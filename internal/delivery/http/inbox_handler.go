@@ -49,6 +49,11 @@ func (h *InboxHandler) GetInbox(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cursor inválido"})
 			return
 		}
+		if errors.Is(err, domain.ErrDatabaseUnavailable) {
+			slog.Error("inbox handler: base de datos no disponible", "owner_id", ownerID, "error", err.Error())
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "el servicio no está disponible"})
+			return
+		}
 		slog.Error("inbox handler: error interno", "owner_id", ownerID, "error", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error interno"})
 		return

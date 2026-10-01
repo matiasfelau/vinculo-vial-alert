@@ -84,7 +84,7 @@ func (r *InboxRepository) FindByOwner(ctx context.Context, ownerID uuid.UUID, cu
 		Order("alerts.created_at DESC, alerts.id DESC").
 		Limit(limit + 1).
 		Scan(&rows).Error; err != nil {
-		return nil, err
+		return nil, classifyDBError(err)
 	}
 
 	items := make([]domain.InboxItem, len(rows))
