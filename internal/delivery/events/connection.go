@@ -25,7 +25,8 @@ const (
 // Publisher nunca retiene una referencia que una reconexión pueda dejar
 // obsoleta.
 type Connection struct {
-	url string
+	url      string
+	exchange string
 
 	mu      sync.RWMutex
 	conn    *amqp.Connection
@@ -35,30 +36,40 @@ type Connection struct {
 	done chan struct{}
 }
 
-// Connect abre la conexión y el canal iniciales y arranca el loop de
-// reconexión en segundo plano. Solo falla si la conexión inicial no puede
-// establecerse: a partir de ahí, toda caída posterior se reintenta sola con
-// backoff exponencial acotado.
-func Connect(url string) (*Connection, error) {
-	conn, channel, err := dial(url)
+// Connect abre la conexión y el canal iniciales, verifica que exchange ya
+// exista, y arranca el loop de reconexión en segundo plano. Falla si la
+// conexión inicial no puede establecerse o si el exchange no existe: a
+// partir de ahí, toda caída posterior se reintenta sola con backoff
+// exponencial acotado.
+func Connect(url, exchange string) (*Connection, error) {
+	conn, channel, err := dial(url, exchange)
 	if err != nil {
 		return nil, err
 	}
 
 	c := &Connection{
-		url:     url,
-		conn:    conn,
-		channel: channel,
-		healthy: true,
-		done:    make(chan struct{}),
+		url:      url,
+		exchange: exchange,
+		conn:     conn,
+		channel:  channel,
+		healthy:  true,
+		done:     make(chan struct{}),
 	}
 
 	go c.watch(conn, channel)
+	go watchReturns(channel.NotifyReturn(make(chan amqp.Return, 1)))
 
 	return c, nil
 }
 
-func dial(url string) (*amqp.Connection, *amqp.Channel, error) {
+// dial abre la conexión y el canal, y verifica pasivamente que exchange
+// exista. La topología (exchanges, colas, retry, DLQ) la declara solo
+// vinculo-vial-core: este servicio nunca crea infraestructura, así que una
+// declaración activa (que crearía el exchange con una configuración
+// adivinada) sería incorrecta. Una declaración pasiva solo verifica que
+// exista con el tipo y las propiedades esperadas, y falla si no — ya sea
+// porque Core todavía no lo desplegó, o porque lo declaró distinto.
+func dial(url, exchange string) (*amqp.Connection, *amqp.Channel, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, nil, fmt.Errorf("rabbitmq: error al conectar: %w", err)
@@ -70,7 +81,28 @@ func dial(url string) (*amqp.Connection, *amqp.Channel, error) {
 		return nil, nil, fmt.Errorf("rabbitmq: error al abrir el canal: %w", err)
 	}
 
+	if err := channel.ExchangeDeclarePassive(exchange, "topic", true, false, false, false, nil); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("rabbitmq: el exchange %q no existe o no coincide con lo esperado (lo declara vinculo-vial-core): %w", exchange, err)
+	}
+
 	return conn, channel, nil
+}
+
+// watchReturns loguea en WARN cada mensaje que el broker devuelve por no
+// poder enrutarlo (mandatory=true sin cola destino). Nunca incluye el
+// cuerpo del mensaje en el log. Termina solo cuando el canal se cierra
+// (NotifyReturn cierra el chan), así que se relanza en cada (re)conexión
+// junto con watch.
+func watchReturns(returns <-chan amqp.Return) {
+	for ret := range returns {
+		slog.Warn("rabbitmq: mensaje no enrutable, el broker lo devolvió",
+			"exchange", ret.Exchange,
+			"routing_key", ret.RoutingKey,
+			"reply_code", ret.ReplyCode,
+			"reply_text", ret.ReplyText,
+		)
+	}
 }
 
 // watch espera el cierre de la conexión o del canal vigentes y dispara la
@@ -107,7 +139,7 @@ func (c *Connection) reconnectLoop() {
 		case <-time.After(delay):
 		}
 
-		conn, channel, err := dial(c.url)
+		conn, channel, err := dial(c.url, c.exchange)
 		if err != nil {
 			slog.Error("rabbitmq: fallo al reconectar, reintentando", "error", err.Error(), "proximo_intento_en", delay.String())
 			delay = nextDelay(delay)
@@ -122,6 +154,7 @@ func (c *Connection) reconnectLoop() {
 
 		slog.Info("rabbitmq: reconectado")
 		go c.watch(conn, channel)
+		go watchReturns(channel.NotifyReturn(make(chan amqp.Return, 1)))
 		return
 	}
 }

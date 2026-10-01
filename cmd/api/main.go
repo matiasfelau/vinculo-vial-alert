@@ -47,7 +47,7 @@ func main() {
 		log.Fatalf("error al migrar el esquema: %v", err)
 	}
 
-	rabbitConn, err := deliveryevents.Connect(cfg.RabbitMQURL)
+	rabbitConn, err := deliveryevents.Connect(cfg.RabbitMQURL, cfg.RabbitMQExchange)
 	if err != nil {
 		log.Fatalf("error al conectar con RabbitMQ: %v", err)
 	}

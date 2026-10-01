@@ -1,7 +1,10 @@
 package events
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,7 +71,7 @@ func TestConnect_ServidorInalcanzable_DevuelveErrorSinBloquearIndefinidamente(t 
 	var err error
 
 	go func() {
-		_, err = Connect("amqp://127.0.0.1:1/")
+		_, err = Connect("amqp://127.0.0.1:1/", "test.exchange")
 		close(done)
 	}()
 
@@ -79,5 +82,35 @@ func TestConnect_ServidorInalcanzable_DevuelveErrorSinBloquearIndefinidamente(t 
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Connect no debe bloquear indefinidamente ante un servidor inalcanzable")
+	}
+}
+
+func TestWatchReturns_LogueaWarnSinElCuerpoDelMensaje(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(previous)
+
+	returns := make(chan amqp.Return, 1)
+	returns <- amqp.Return{
+		Exchange:   "vvi.topic.exchange",
+		RoutingKey: "alert.created",
+		ReplyCode:  312,
+		ReplyText:  "NO_ROUTE",
+		Body:       []byte("contenido-sensible-del-evento"),
+	}
+	close(returns)
+
+	watchReturns(returns)
+
+	logueado := buf.String()
+	if !strings.Contains(logueado, "NO_ROUTE") {
+		t.Errorf("se esperaba que el log incluyera el reply_text, log = %s", logueado)
+	}
+	if !strings.Contains(logueado, "WARN") {
+		t.Errorf("se esperaba nivel WARN, log = %s", logueado)
+	}
+	if strings.Contains(logueado, "contenido-sensible-del-evento") {
+		t.Error("el log de un mensaje no enrutable no debe incluir el cuerpo del mensaje")
 	}
 }

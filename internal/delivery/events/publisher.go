@@ -79,7 +79,10 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 	ctx, cancel := context.WithTimeout(ctx, p.publishTimeout)
 	defer cancel()
 
-	err = p.channel.PublishWithContext(ctx, p.exchange, routingKeyAlertCreated, false, false, amqp.Publishing{
+	// mandatory=true: si el broker no puede enrutar el mensaje a ninguna
+	// cola, lo devuelve en vez de descartarlo en silencio. Connection
+	// escucha ese retorno vía NotifyReturn y loguea un WARN.
+	err = p.channel.PublishWithContext(ctx, p.exchange, routingKeyAlertCreated, true, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		Body:         body,
