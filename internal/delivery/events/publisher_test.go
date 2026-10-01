@@ -115,6 +115,52 @@ func TestPublisher_PublishAlertCreated_PropagaErrorDelCanal(t *testing.T) {
 	}
 }
 
+func TestPublisher_PublishAlertCreated_ReutilizaElEventIDDelOutbox(t *testing.T) {
+	mock := &mockChannel{acked: true}
+	publisher := NewPublisher(mock, "vvi.topic.exchange", time.Second)
+
+	eventID := uuid.New()
+	err := publisher.PublishAlertCreated(context.Background(), domain.AlertCreatedEvent{
+		EventID:   eventID,
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+	})
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	var envelope EventEnvelope
+	if err := json.Unmarshal(mock.msg.Body, &envelope); err != nil {
+		t.Fatalf("no se pudo decodificar el envelope: %v", err)
+	}
+	if envelope.EventID != eventID.String() {
+		t.Errorf("eventId = %q, se esperaba reutilizar %q: un reintento debe conservar el mismo event_id para que el consumidor deduplique correctamente", envelope.EventID, eventID.String())
+	}
+}
+
+func TestPublisher_PublishAlertCreated_SinEventIDGeneraUno(t *testing.T) {
+	// Defensa para llamadores que no vengan del outbox (ej. otros tests de
+	// este archivo): nunca debe publicarse con un event_id vacío.
+	mock := &mockChannel{acked: true}
+	publisher := NewPublisher(mock, "vvi.topic.exchange", time.Second)
+
+	err := publisher.PublishAlertCreated(context.Background(), domain.AlertCreatedEvent{
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+	})
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	var envelope EventEnvelope
+	if err := json.Unmarshal(mock.msg.Body, &envelope); err != nil {
+		t.Fatalf("no se pudo decodificar el envelope: %v", err)
+	}
+	if _, err := uuid.Parse(envelope.EventID); err != nil {
+		t.Errorf("eventId = %q no es un UUID válido: %v", envelope.EventID, err)
+	}
+}
+
 func TestPublisher_PublishAlertCreated_NackDelBroker_DevuelveError(t *testing.T) {
 	// acked=false sin error de transporte: el broker recibió el publish pero
 	// lo rechazó (nack) explícitamente vía publisher confirm.

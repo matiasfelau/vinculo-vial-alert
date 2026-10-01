@@ -61,8 +61,15 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 		return fmt.Errorf("rabbitmq publisher: error al serializar el payload: %w", err)
 	}
 
+	eventID := event.EventID
+	if eventID == uuid.Nil {
+		// Defensa para llamadores que no vengan del outbox (ej. tests
+		// directos de Publisher): nunca publicar con un event_id vacío.
+		eventID = uuid.New()
+	}
+
 	envelope := EventEnvelope{
-		EventID:   uuid.NewString(),
+		EventID:   eventID.String(),
 		EventType: routingKeyAlertCreated,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Producer:  producerName,

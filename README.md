@@ -3,7 +3,11 @@
 Servicio de alertas del sistema Vínculo Vial. Recibe el escaneo de una
 patente cifrada, resuelve los dueños del vehículo a través de
 `vinculo-vial-vehicle` sin descifrar la patente, persiste un historial
-anónimo del emisor y publica el evento `alert.created` en RabbitMQ.
+anónimo del emisor y expone el buzón de alertas de cada dueño. El evento
+`alert.created` se persiste en la misma transacción que la alerta
+(patrón transactional outbox) y un worker en background lo publica en
+RabbitMQ: la creación de la alerta no depende de que el broker esté
+disponible en ese momento.
 
 ## Requisitos
 
@@ -70,10 +74,13 @@ El servicio sigue Clean Architecture:
 ```
 /cmd/api                   punto de entrada
 /internal/domain           entidades e interfaces del dominio
-/internal/service/alert    orquestación del caso de uso
+/internal/service/alert    caso de uso de creación de alertas
+/internal/service/inbox    caso de uso de lectura del buzón de alertas
+/internal/service/outbox   worker de publicación en background (transactional outbox)
+/internal/circuitbreaker   circuit breaker genérico para llamadas salientes
 /internal/repository       persistencia (GORM/PostgreSQL)
 /internal/delivery/http    handlers HTTP (Gin)
-/internal/delivery/events  publicación de eventos (RabbitMQ)
+/internal/delivery/events  conexión y publicación de eventos (RabbitMQ)
 /internal/client/vehicle   cliente hacia el endpoint interno de Vehicle
 /internal/validation       validación de entrada
 /pkg/config                configuración por variables de entorno

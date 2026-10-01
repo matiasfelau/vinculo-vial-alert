@@ -13,12 +13,14 @@ import (
 type mockRepo struct {
 	created             *domain.AlertHistory
 	createdDestinations []uuid.UUID
+	createdOutboxEvent  *domain.OutboxEvent
 	err                 error
 }
 
-func (m *mockRepo) Create(ctx context.Context, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID) error {
+func (m *mockRepo) Create(ctx context.Context, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID, outboxEvent *domain.OutboxEvent) error {
 	m.created = alert
 	m.createdDestinations = destinationOwnerIDs
+	m.createdOutboxEvent = outboxEvent
 	return m.err
 }
 
@@ -33,23 +35,10 @@ func (m *mockResolver) ResolveOwners(ctx context.Context, patEnc string) ([]uuid
 	return m.ownerIDs, m.err
 }
 
-type mockPublisher struct {
-	event  *domain.AlertCreatedEvent
-	err    error
-	called bool
-}
-
-func (m *mockPublisher) PublishAlertCreated(ctx context.Context, event domain.AlertCreatedEvent) error {
-	m.called = true
-	m.event = &event
-	return m.err
-}
-
-func TestExecute_ErrorDelResolver_NoPersisteNiPublica(t *testing.T) {
+func TestExecute_ErrorDelResolver_NoPersiste(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{err: domain.ErrVehicleUnavailable}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+	svc := NewCreateAlertService(repo, resolver)
 
 	err := svc.Execute(context.Background(), CreateAlertInput{
 		IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed, PatEnc: "x",
@@ -61,16 +50,12 @@ func TestExecute_ErrorDelResolver_NoPersisteNiPublica(t *testing.T) {
 	if repo.created != nil {
 		t.Error("no debía persistirse el historial si Vehicle no está disponible")
 	}
-	if publisher.called {
-		t.Error("no debía publicarse el evento si Vehicle no está disponible")
-	}
 }
 
-func TestExecute_OwnerIDsVacio_PersisteYNoPublica(t *testing.T) {
+func TestExecute_OwnerIDsVacio_PersisteSinEventoDeOutbox(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+	svc := NewCreateAlertService(repo, resolver)
 
 	issuerID := uuid.New()
 	err := svc.Execute(context.Background(), CreateAlertInput{
@@ -89,18 +74,17 @@ func TestExecute_OwnerIDsVacio_PersisteYNoPublica(t *testing.T) {
 	if len(repo.createdDestinations) != 0 {
 		t.Errorf("destinatarios persistidos = %v, se esperaba ninguno", repo.createdDestinations)
 	}
-	if publisher.called {
-		t.Error("no debía publicarse un evento sin destinatarios")
+	if repo.createdOutboxEvent != nil {
+		t.Error("no debía encolarse un evento de outbox sin destinatarios")
 	}
 }
 
-func TestExecute_IssuerEntreLosDuenos_SeFiltraAntesDePublicar(t *testing.T) {
+func TestExecute_IssuerEntreLosDuenos_SeFiltraDelEventoDeOutbox(t *testing.T) {
 	repo := &mockRepo{}
 	issuerID := uuid.New()
 	otroOwner := uuid.New()
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{issuerID, otroOwner}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+	svc := NewCreateAlertService(repo, resolver)
 
 	err := svc.Execute(context.Background(), CreateAlertInput{
 		IssuerID: issuerID, AlertType: domain.AlertTypeCrashed, PatEnc: "x",
@@ -109,13 +93,13 @@ func TestExecute_IssuerEntreLosDuenos_SeFiltraAntesDePublicar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
-	if !publisher.called {
-		t.Fatal("debía publicarse el evento para el resto de los dueños")
+	if repo.createdOutboxEvent == nil {
+		t.Fatal("debía encolarse un evento de outbox para el resto de los dueños")
 	}
-	if len(publisher.event.OwnerIDs) != 1 || publisher.event.OwnerIDs[0] != otroOwner {
-		t.Errorf("owner_ids publicados = %v, se esperaba solo [%v]", publisher.event.OwnerIDs, otroOwner)
+	if len(repo.createdOutboxEvent.OwnerIDs) != 1 || repo.createdOutboxEvent.OwnerIDs[0] != otroOwner {
+		t.Errorf("owner_ids del evento = %v, se esperaba solo [%v]", repo.createdOutboxEvent.OwnerIDs, otroOwner)
 	}
-	for _, id := range publisher.event.OwnerIDs {
+	for _, id := range repo.createdOutboxEvent.OwnerIDs {
 		if id == issuerID {
 			t.Error("el emisor no debe recibir su propia alerta")
 		}
@@ -128,14 +112,16 @@ func TestExecute_IssuerEntreLosDuenos_SeFiltraAntesDePublicar(t *testing.T) {
 			t.Error("el emisor no debe persistirse como destinatario de su propia alerta")
 		}
 	}
+	if repo.createdOutboxEvent.ID == repo.created.ID {
+		t.Error("el evento de outbox debe tener su propio ID, distinto del de la alerta")
+	}
 }
 
-func TestExecute_IssuerEsUnicoDueno_TrasFiltrarNoPublica(t *testing.T) {
+func TestExecute_IssuerEsUnicoDueno_TrasFiltrarNoEncolaEvento(t *testing.T) {
 	repo := &mockRepo{}
 	issuerID := uuid.New()
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{issuerID}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+	svc := NewCreateAlertService(repo, resolver)
 
 	err := svc.Execute(context.Background(), CreateAlertInput{
 		IssuerID: issuerID, AlertType: domain.AlertTypeCrashed, PatEnc: "x",
@@ -150,16 +136,15 @@ func TestExecute_IssuerEsUnicoDueno_TrasFiltrarNoPublica(t *testing.T) {
 	if len(repo.createdDestinations) != 0 {
 		t.Errorf("destinatarios persistidos = %v, se esperaba ninguno tras filtrar al emisor", repo.createdDestinations)
 	}
-	if publisher.called {
-		t.Error("no debía publicarse un evento sin destinatarios tras filtrar al emisor")
+	if repo.createdOutboxEvent != nil {
+		t.Error("no debía encolarse un evento de outbox tras filtrar al emisor")
 	}
 }
 
 func TestExecute_ReenviaPatEncSinModificar(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+	svc := NewCreateAlertService(repo, resolver)
 
 	patEnc := "criptograma-hpke-de-prueba"
 	err := svc.Execute(context.Background(), CreateAlertInput{
@@ -173,36 +158,15 @@ func TestExecute_ReenviaPatEncSinModificar(t *testing.T) {
 	}
 }
 
-func TestExecute_FalloAlPublicar_NoPropagaError(t *testing.T) {
-	repo := &mockRepo{}
-	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{err: errors.New("rabbitmq no disponible")}
-	svc := NewCreateAlertService(repo, resolver, publisher)
-
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed, PatEnc: "x",
-	})
-	if err != nil {
-		t.Fatalf("se esperaba 202 igual aunque falle el publish (MVP), obtuvo error: %v", err)
-	}
-	if repo.created == nil {
-		t.Fatal("debía persistirse el historial antes de intentar publicar")
-	}
-}
-
-func TestExecute_ErrorAlPersistir_DevuelveErrorYNoPublica(t *testing.T) {
+func TestExecute_ErrorAlPersistir_DevuelveError(t *testing.T) {
 	repo := &mockRepo{err: errors.New("db caída")}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+	svc := NewCreateAlertService(repo, resolver)
 
 	err := svc.Execute(context.Background(), CreateAlertInput{
 		IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed, PatEnc: "x",
 	})
 	if err == nil {
 		t.Fatal("se esperaba error al fallar la persistencia")
-	}
-	if publisher.called {
-		t.Error("no debía publicarse si la persistencia falló")
 	}
 }
