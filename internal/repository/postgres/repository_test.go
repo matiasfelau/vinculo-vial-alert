@@ -77,6 +77,28 @@ func TestAlertModel_NoExponeCamposSensibles(t *testing.T) {
 	}
 }
 
+func TestAlertRepository_Create_RespetaContextoYaVencidoDelLlamador(t *testing.T) {
+	// El timeout interno de queryTimeout no debe enmascarar un contexto que
+	// el llamador ya canceló: context.WithTimeout sobre un padre vencido
+	// hereda esa cancelación de inmediato.
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	if err := repo.Create(ctx, alert, nil); err == nil {
+		t.Fatal("se esperaba error al persistir con un contexto ya cancelado")
+	}
+}
+
 func TestAlertRepository_Create_PersisteSoloIssuerIDYAlertType(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewAlertRepository(db)

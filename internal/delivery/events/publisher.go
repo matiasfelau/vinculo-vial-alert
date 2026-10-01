@@ -30,15 +30,19 @@ type amqpChannel interface {
 // Publisher publica el evento alert.created en el exchange topic de la
 // plataforma, respetando el Event Envelope estándar.
 type Publisher struct {
-	channel  amqpChannel
-	exchange string
+	channel        amqpChannel
+	exchange       string
+	publishTimeout time.Duration
 }
 
 var _ domain.EventPublisher = (*Publisher)(nil)
 
 // NewPublisher construye un Publisher sobre un canal AMQP ya abierto.
-func NewPublisher(channel amqpChannel, exchange string) *Publisher {
-	return &Publisher{channel: channel, exchange: exchange}
+// publishTimeout acota el propio basic.publish: el contexto del request no
+// trae un deadline propio para esta llamada, así que sin este timeout un
+// broker en flow control bloquearía el request indefinidamente.
+func NewPublisher(channel amqpChannel, exchange string, publishTimeout time.Duration) *Publisher {
+	return &Publisher{channel: channel, exchange: exchange, publishTimeout: publishTimeout}
 }
 
 // PublishAlertCreated implementa domain.EventPublisher.
@@ -72,9 +76,13 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 
 	slog.Info("rabbitmq publisher: publicando alert.created", "exchange", p.exchange, "routing_key", routingKeyAlertCreated)
 
+	ctx, cancel := context.WithTimeout(ctx, p.publishTimeout)
+	defer cancel()
+
 	err = p.channel.PublishWithContext(ctx, p.exchange, routingKeyAlertCreated, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        body,
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		Body:         body,
 	})
 	if err != nil {
 		slog.Error("falla al publicar en rabbitmq", "exchange", p.exchange, "routing_key", routingKeyAlertCreated, "error", err.Error())

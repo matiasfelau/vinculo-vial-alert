@@ -52,6 +52,18 @@ func TestInboxItem_NoExponeCamposDelEmisor(t *testing.T) {
 	}
 }
 
+func TestInboxRepository_FindByOwner_RespetaContextoYaVencidoDelLlamador(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewInboxRepository(db)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := repo.FindByOwner(ctx, uuid.New(), nil, 20); err == nil {
+		t.Fatal("se esperaba error al consultar con un contexto ya cancelado")
+	}
+}
+
 func TestInboxRepository_FindByOwner_SoloDevuelveAlertasDelOwner(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewInboxRepository(db)
