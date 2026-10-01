@@ -73,6 +73,9 @@ func TestPublisher_PublishAlertCreated_RespetaEnvelopeEstandar(t *testing.T) {
 	if envelope.Actor != issuerID.String() {
 		t.Errorf("actor = %q, se esperaba %q (el issuer_id debe viajar en actor)", envelope.Actor, issuerID.String())
 	}
+	if mock.msg.DeliveryMode != amqp.Persistent {
+		t.Errorf("delivery mode = %d, se esperaba %d (amqp.Persistent): un mensaje transient se pierde ante un reinicio del broker aunque la cola sea durable", mock.msg.DeliveryMode, amqp.Persistent)
+	}
 	if _, err := time.Parse(time.RFC3339, envelope.Timestamp); err != nil {
 		t.Errorf("timestamp no es ISO8601 válido: %v", err)
 	}

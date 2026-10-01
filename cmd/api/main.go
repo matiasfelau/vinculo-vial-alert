@@ -47,23 +47,23 @@ func main() {
 		log.Fatalf("error al migrar el esquema: %v", err)
 	}
 
-	rabbitConn, rabbitChannel, err := deliveryevents.Connect(cfg.RabbitMQURL)
+	rabbitConn, err := deliveryevents.Connect(cfg.RabbitMQURL)
 	if err != nil {
 		log.Fatalf("error al conectar con RabbitMQ: %v", err)
 	}
 	defer rabbitConn.Close()
-	defer rabbitChannel.Close()
 
 	repo := repopostgres.NewAlertRepository(db)
 	inboxRepo := repopostgres.NewInboxRepository(db)
 	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout, cfg.InternalServiceToken)
-	publisher := deliveryevents.NewPublisher(rabbitChannel, cfg.RabbitMQExchange, cfg.RabbitMQPublishTimeout)
+	publisher := deliveryevents.NewPublisher(rabbitConn, cfg.RabbitMQExchange, cfg.RabbitMQPublishTimeout)
 
 	service := alertsvc.NewCreateAlertService(repo, vehicleClient, publisher)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
-	router := deliveryhttp.NewRouter(alertHandler, inboxHandler)
+	healthHandler := deliveryhttp.NewHealthHandler(rabbitConn)
+	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler)
 
 	// http.Server manual en vez de router.Run(): Gin no permite configurar
 	// Read/WriteTimeout a través de ese atajo, y sin ellos un cliente lento
