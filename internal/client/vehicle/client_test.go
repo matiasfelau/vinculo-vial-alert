@@ -83,7 +83,7 @@ func TestClient_ResolveOwners_TimeoutDevuelveErrVehicleUnavailable(t *testing.T)
 	}
 }
 
-func TestClient_ResolveOwners_ErrorDelServidorDevuelveErrVehicleUnavailable(t *testing.T) {
+func TestClient_ResolveOwners_ErrorDeServidorDevuelveErrVehicleBadResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -91,8 +91,39 @@ func TestClient_ResolveOwners_ErrorDelServidorDevuelveErrVehicleUnavailable(t *t
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
 	_, err := client.ResolveOwners(context.Background(), "x")
-	if !errors.Is(err, domain.ErrVehicleUnavailable) {
-		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable", err)
+	if !errors.Is(err, domain.ErrVehicleBadResponse) {
+		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleBadResponse (un 5xx es un upstream que respondió mal, no una caída de conexión)", err)
+	}
+	if errors.Is(err, domain.ErrVehicleUnavailable) {
+		t.Error("un 5xx no debe envolver ErrVehicleUnavailable: no es una falla de conexión propia")
+	}
+}
+
+func TestClient_ResolveOwners_CuerpoInvalidoDevuelveErrVehicleBadResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{esto no es json valido"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, time.Second, tokenDePrueba)
+	_, err := client.ResolveOwners(context.Background(), "x")
+	if !errors.Is(err, domain.ErrVehicleBadResponse) {
+		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleBadResponse ante un cuerpo no decodificable", err)
+	}
+}
+
+func TestClient_ResolveOwners_OwnerIDInvalidoDevuelveErrVehicleBadResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resolveOwnerResponse{OwnerIDs: []string{"no-es-un-uuid"}})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, time.Second, tokenDePrueba)
+	_, err := client.ResolveOwners(context.Background(), "x")
+	if !errors.Is(err, domain.ErrVehicleBadResponse) {
+		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleBadResponse ante un owner_id no parseable", err)
 	}
 }
 
@@ -117,7 +148,17 @@ func TestClient_ResolveOwners_RechazoPorAutenticacion(t *testing.T) {
 
 	client := NewClient(server.URL, time.Second, "token-incorrecto")
 	_, err := client.ResolveOwners(context.Background(), "x")
-	if !errors.Is(err, domain.ErrVehicleUnavailable) {
-		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable ante un 401", err)
+	// Un 401 es un rechazo por un problema propio (token mal configurado),
+	// no una caída de Vehicle: no debe confundirse con ErrVehicleUnavailable
+	// ni con ErrVehicleBadResponse, para no contar como falla de
+	// disponibilidad ante un futuro circuit breaker.
+	if !errors.Is(err, domain.ErrVehicleRejected) {
+		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleRejected ante un 401", err)
+	}
+	if errors.Is(err, domain.ErrVehicleUnavailable) {
+		t.Error("un 401 no debe envolver ErrVehicleUnavailable: no es una caída de conexión")
+	}
+	if errors.Is(err, domain.ErrVehicleBadResponse) {
+		t.Error("un 401 no debe envolver ErrVehicleBadResponse: es un rechazo 4xx, no un error 5xx del upstream")
 	}
 }

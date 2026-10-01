@@ -60,6 +60,9 @@ func NewInboxRepository(db *gorm.DB) *InboxRepository {
 // cláusula de tupla del cursor si viene, y LIMIT limit+1 para que el caso
 // de uso pueda detectar si hay próxima página sin un COUNT adicional.
 func (r *InboxRepository) FindByOwner(ctx context.Context, ownerID uuid.UUID, cursor *domain.Cursor, limit int) ([]domain.InboxItem, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
 	query := r.db.WithContext(ctx).
 		Table("alerts").
 		Select("alerts.id, alerts.alert_type, alerts.created_at").
