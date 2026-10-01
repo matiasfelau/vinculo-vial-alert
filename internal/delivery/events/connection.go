@@ -5,6 +5,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -17,6 +18,19 @@ const (
 	reconnectInitialDelay = 1 * time.Second
 	reconnectMaxDelay     = 30 * time.Second
 )
+
+// errBrokerUnreachable indica que no se pudo establecer la conexión TCP/AMQP
+// con el broker (dirección inválida, broker caído, red inalcanzable). No es
+// un error de despliegue: Connect no falla por esto, arranca en modo
+// degradado (Healthy()=false) y reintenta en background con el mismo
+// backoff que cualquier otra caída posterior.
+var errBrokerUnreachable = errors.New("rabbitmq: broker inalcanzable")
+
+// errExchangeNotFound indica que el exchange no existe o no coincide con lo
+// esperado (tipo, durabilidad). Es un error de despliegue — Core no lo
+// declaró, o lo declaró distinto — así que Connect sí falla: es
+// responsabilidad del llamador (main.go) abortar el arranque.
+var errExchangeNotFound = errors.New("rabbitmq: exchange no encontrado")
 
 // Connection mantiene viva una conexión y un canal AMQP, reconectando en
 // segundo plano ante una caída del broker en lugar de dejar el servicio
@@ -36,15 +50,32 @@ type Connection struct {
 	done chan struct{}
 }
 
-// Connect abre la conexión y el canal iniciales, verifica que exchange ya
-// exista, y arranca el loop de reconexión en segundo plano. Falla si la
-// conexión inicial no puede establecerse o si el exchange no existe: a
-// partir de ahí, toda caída posterior se reintenta sola con backoff
-// exponencial acotado.
+// Connect abre la conexión y el canal iniciales y verifica que exchange ya
+// exista. Dos desenlaces posibles ante una falla:
+//   - El exchange no existe o no coincide con lo esperado: es un error de
+//     despliegue (Core no lo declaró, o lo declaró distinto). Connect falla
+//     y el llamador (main.go) aborta el arranque.
+//   - El broker es inalcanzable (TCP/AMQP): no es un error de despliegue.
+//     Connect NO falla — devuelve una Connection en modo degradado
+//     (Healthy()=false) y arranca el loop de reconexión en background, para
+//     que las rutas que no publican (ej. GET /alerts/inbox) puedan servir
+//     igual mientras el broker sigue caído.
 func Connect(url, exchange string) (*Connection, error) {
 	conn, channel, err := dial(url, exchange)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, errExchangeNotFound) {
+			return nil, err
+		}
+
+		slog.Error("rabbitmq: broker inalcanzable al arrancar, continuando en modo degradado", "error", err.Error())
+		c := &Connection{
+			url:      url,
+			exchange: exchange,
+			healthy:  false,
+			done:     make(chan struct{}),
+		}
+		go c.reconnectLoop()
+		return c, nil
 	}
 
 	c := &Connection{
@@ -62,28 +93,34 @@ func Connect(url, exchange string) (*Connection, error) {
 	return c, nil
 }
 
-// dial abre la conexión y el canal, y verifica pasivamente que exchange
-// exista. La topología (exchanges, colas, retry, DLQ) la declara solo
-// vinculo-vial-core: este servicio nunca crea infraestructura, así que una
-// declaración activa (que crearía el exchange con una configuración
-// adivinada) sería incorrecta. Una declaración pasiva solo verifica que
-// exista con el tipo y las propiedades esperadas, y falla si no — ya sea
-// porque Core todavía no lo desplegó, o porque lo declaró distinto.
+// dial abre la conexión y el canal, activa publisher confirms, y verifica
+// pasivamente que exchange exista. La topología (exchanges, colas, retry,
+// DLQ) la declara solo vinculo-vial-core: este servicio nunca crea
+// infraestructura, así que una declaración activa (que crearía el exchange
+// con una configuración adivinada) sería incorrecta. Una declaración pasiva
+// solo verifica que exista con el tipo y las propiedades esperadas, y falla
+// si no — ya sea porque Core todavía no lo desplegó, o porque lo declaró
+// distinto.
 func dial(url, exchange string) (*amqp.Connection, *amqp.Channel, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rabbitmq: error al conectar: %w", err)
+		return nil, nil, fmt.Errorf("%w: %w", errBrokerUnreachable, err)
 	}
 
 	channel, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("rabbitmq: error al abrir el canal: %w", err)
+		return nil, nil, fmt.Errorf("%w: error al abrir el canal: %w", errBrokerUnreachable, err)
+	}
+
+	if err := channel.Confirm(false); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("%w: error al activar publisher confirms: %w", errBrokerUnreachable, err)
 	}
 
 	if err := channel.ExchangeDeclarePassive(exchange, "topic", true, false, false, false, nil); err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("rabbitmq: el exchange %q no existe o no coincide con lo esperado (lo declara vinculo-vial-core): %w", exchange, err)
+		return nil, nil, fmt.Errorf("%w %q (lo declara vinculo-vial-core): %w", errExchangeNotFound, exchange, err)
 	}
 
 	return conn, channel, nil
@@ -182,21 +219,44 @@ func (c *Connection) Healthy() bool {
 	return c.healthy
 }
 
-// PublishWithContext implementa amqpChannel delegando al canal vigente. Si
-// el canal está caído y todavía no hubo reconexión, devuelve error de
+// PublishAndConfirm implementa amqpChannel delegando al canal vigente. Si el
+// canal está caído y todavía no hubo reconexión, devuelve error de
 // inmediato en lugar de bloquear: el llamador (Publisher) lo propaga y el
 // caso de uso decide qué hacer, sin reintentar en loop dentro del request.
-func (c *Connection) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
+//
+// Publica con publisher confirms (dial ya activó Confirm(false) sobre este
+// canal) y espera el ack/nack del broker antes de devolver: acked=false
+// significa que el broker rechazó (nack) el mensaje, o que no llegó a
+// confirmarlo antes de que ctx expire. Un ack confirma que el broker aceptó
+// el mensaje de forma durable; no confirma que haya podido enrutarlo a
+// alguna cola — eso es responsabilidad de mandatory+NotifyReturn (ver
+// watchReturns), una señal independiente.
+func (c *Connection) PublishAndConfirm(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (bool, error) {
 	c.mu.RLock()
 	channel := c.channel
 	healthy := c.healthy
 	c.mu.RUnlock()
 
 	if !healthy || channel == nil {
-		return fmt.Errorf("rabbitmq: sin conexión activa al broker")
+		return false, fmt.Errorf("rabbitmq: sin conexión activa al broker")
 	}
 
-	return channel.PublishWithContext(ctx, exchange, key, mandatory, immediate, msg)
+	confirmation, err := channel.PublishWithDeferredConfirmWithContext(ctx, exchange, key, mandatory, immediate, msg)
+	if err != nil {
+		return false, err
+	}
+	if confirmation == nil {
+		// Solo ocurre si el canal no está en modo confirm; dial() siempre lo
+		// activa, así que esto sería un bug de wiring, no una condición
+		// esperable en producción.
+		return false, fmt.Errorf("rabbitmq: el canal no está en modo publisher confirm")
+	}
+
+	acked, err := confirmation.WaitContext(ctx)
+	if err != nil {
+		return false, fmt.Errorf("rabbitmq: no se recibió el publisher confirm a tiempo: %w", err)
+	}
+	return acked, nil
 }
 
 // Close detiene el loop de reconexión y cierra la conexión vigente.
