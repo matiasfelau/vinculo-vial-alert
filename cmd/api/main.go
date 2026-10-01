@@ -43,7 +43,6 @@ func main() {
 	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
 	sqlDB.SetMaxIdleConns(dbMaxIdleConns)
 	sqlDB.SetConnMaxLifetime(dbConnMaxLifetime)
-
 	if err := repopostgres.AutoMigrate(db); err != nil {
 		log.Fatalf("error al migrar el esquema: %v", err)
 	}
@@ -68,8 +67,9 @@ func main() {
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
-	healthHandler := deliveryhttp.NewHealthHandler(rabbitConn)
-	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler)
+	healthHandler := deliveryhttp.NewHealthHandler()
+	readyHandler := deliveryhttp.NewReadyHandler(sqlDB, rabbitConn)
+	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler)
 
 	// http.Server manual en vez de router.Run(): Gin no permite configurar
 	// Read/WriteTimeout a través de ese atajo, y sin ellos un cliente lento

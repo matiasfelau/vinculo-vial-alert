@@ -6,30 +6,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// rabbitMQHealthChecker permite que el health check refleje el estado real
-// de la conexión AMQP sin acoplar este paquete a la librería del broker.
-type rabbitMQHealthChecker interface {
-	Healthy() bool
+// HealthHandler expone la señal de liveness: si el proceso está vivo y
+// puede responder. Deliberadamente no consulta ninguna dependencia — eso
+// es responsabilidad de ReadyHandler. Un liveness check con dependencias
+// arriesga que un orquestador reinicie en loop una instancia sana solo
+// porque una dependencia externa está caída, lo que no soluciona nada.
+type HealthHandler struct{}
+
+// NewHealthHandler construye el handler de liveness.
+func NewHealthHandler() *HealthHandler {
+	return &HealthHandler{}
 }
 
-// HealthHandler expone el estado operativo del servicio.
-type HealthHandler struct {
-	rabbitMQ rabbitMQHealthChecker
-}
-
-// NewHealthHandler construye el handler a partir de las dependencias cuyo
-// estado se refleja en la respuesta.
-func NewHealthHandler(rabbitMQ rabbitMQHealthChecker) *HealthHandler {
-	return &HealthHandler{rabbitMQ: rabbitMQ}
-}
-
-// Check responde 200 si la conexión a RabbitMQ está viva, 503 si no: un
-// health check estático ocultaría que el servicio quedó publicando contra
-// un canal muerto, impidiendo que Kong lo saque de circulación.
+// Check responde 200 si el proceso puede procesar la solicitud.
 func (h *HealthHandler) Check(c *gin.Context) {
-	if !h.rabbitMQ.Healthy() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "degraded", "rabbitmq": "down"})
-		return
-	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
