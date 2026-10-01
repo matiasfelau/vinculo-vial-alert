@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -61,6 +62,19 @@ func TestInboxRepository_FindByOwner_RespetaContextoYaVencidoDelLlamador(t *test
 
 	if _, err := repo.FindByOwner(ctx, uuid.New(), nil, 20); err == nil {
 		t.Fatal("se esperaba error al consultar con un contexto ya cancelado")
+	}
+}
+
+func TestInboxRepository_FindByOwner_DeadlineVencido_ClasificaComoErrDatabaseUnavailable(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewInboxRepository(db)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+
+	_, err := repo.FindByOwner(ctx, uuid.New(), nil, 20)
+	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
+		t.Fatalf("error = %v, se esperaba que envolviera ErrDatabaseUnavailable", err)
 	}
 }
 

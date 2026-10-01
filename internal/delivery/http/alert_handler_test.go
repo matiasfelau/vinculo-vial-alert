@@ -98,6 +98,25 @@ func TestCreateAlert_AlertTypeInvalido_Devuelve400SinLlamarAVehicle(t *testing.T
 	}
 }
 
+func TestCreateAlert_BaseDeDatosNoDisponible_Devuelve503(t *testing.T) {
+	repo := &mockRepo{err: domain.ErrDatabaseUnavailable}
+	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
+	publisher := &mockPublisher{}
+	router := nuevoRouterDePrueba(repo, resolver, publisher)
+
+	rec := realizarSolicitud(router,
+		map[string]string{headerUserID: uuid.New().String()},
+		map[string]string{"alert_type": "CRASHED", "pat_enc": "x"},
+	)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, se esperaba %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if publisher.called {
+		t.Error("no debía publicarse si la base de datos no está disponible")
+	}
+}
+
 func TestCreateAlert_VehicleNoDisponible_Devuelve503(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{err: domain.ErrVehicleUnavailable}

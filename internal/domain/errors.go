@@ -31,3 +31,12 @@ var ErrVehicleRejected = errors.New("el servicio de vehículos rechazó la solic
 // decodificarse. El handler debe mapear este error a 400 sin exponer el
 // detalle interno del formato del cursor.
 var ErrInvalidCursor = errors.New("cursor inválido")
+
+// ErrDatabaseUnavailable indica que la base de datos no respondió a tiempo
+// o no está disponible: deadline de contexto, falla de conexión (SQLSTATE
+// 08xxx), recursos agotados (53xxx), statement_timeout excedido (57014) o
+// apagado administrativo (57P0x). El handler debe mapear este error a 503.
+// Cualquier otro error de persistencia (ej. una violación de constraint) no
+// es este caso y se trata como 500: la sección Postgres del contrato de
+// resiliencia reserva 503 exclusivamente para indisponibilidad, nunca 502.
+var ErrDatabaseUnavailable = errors.New("la base de datos no está disponible")
