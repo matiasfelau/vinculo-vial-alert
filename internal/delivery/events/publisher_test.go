@@ -14,17 +14,19 @@ import (
 )
 
 type mockChannel struct {
-	exchange string
-	key      string
-	msg      amqp.Publishing
-	err      error
-	called   bool
+	exchange  string
+	key       string
+	mandatory bool
+	msg       amqp.Publishing
+	err       error
+	called    bool
 }
 
 func (m *mockChannel) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
 	m.called = true
 	m.exchange = exchange
 	m.key = key
+	m.mandatory = mandatory
 	m.msg = msg
 	return m.err
 }
@@ -54,6 +56,9 @@ func TestPublisher_PublishAlertCreated_RespetaEnvelopeEstandar(t *testing.T) {
 	}
 	if mock.key != routingKeyAlertCreated {
 		t.Errorf("routing key = %q, se esperaba %q", mock.key, routingKeyAlertCreated)
+	}
+	if !mock.mandatory {
+		t.Error("mandatory debía ser true: sin esto, un mensaje no enrutable se descarta en silencio en vez de volver por NotifyReturn")
 	}
 
 	var envelope EventEnvelope
