@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"vinculo-vial-alert/internal/domain"
@@ -17,12 +18,23 @@ type Worker struct {
 	repo      domain.OutboxRepository
 	publisher domain.EventPublisher
 	batchSize int
+	// healthy refleja el resultado del último ciclo: false si no pudo leer el
+	// outbox. Un broker caído NO lo pone en false: los eventos quedan
+	// pendientes y se reintentan, que es el comportamiento diseñado.
+	healthy atomic.Bool
 }
 
 // NewWorker construye un Worker a partir de sus dependencias del dominio.
 // batchSize acota cuántos eventos se intentan publicar por ciclo.
 func NewWorker(repo domain.OutboxRepository, publisher domain.EventPublisher, batchSize int) *Worker {
-	return &Worker{repo: repo, publisher: publisher, batchSize: batchSize}
+	w := &Worker{repo: repo, publisher: publisher, batchSize: batchSize}
+	w.healthy.Store(true)
+	return w
+}
+
+// Healthy indica si el worker puede leer el outbox (último ciclo exitoso).
+func (w *Worker) Healthy() bool {
+	return w.healthy.Load()
 }
 
 // ProcessBatch intenta publicar hasta batchSize eventos pendientes y
@@ -39,9 +51,11 @@ func NewWorker(repo domain.OutboxRepository, publisher domain.EventPublisher, ba
 func (w *Worker) ProcessBatch(ctx context.Context) (int, error) {
 	events, err := w.repo.FetchPending(ctx, w.batchSize)
 	if err != nil {
+		w.healthy.Store(false)
 		return 0, fmt.Errorf("outbox worker: error al obtener eventos pendientes: %w", err)
 	}
 
+	w.healthy.Store(true)
 	sent := 0
 	for _, event := range events {
 		err := w.publisher.PublishAlertCreated(ctx, domain.AlertCreatedEvent{

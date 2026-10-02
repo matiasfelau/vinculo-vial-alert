@@ -47,8 +47,9 @@ func nuevoRouterDePrueba(repo *mockRepo, resolver *mockResolver) *gin.Engine {
 	alertHandler := NewAlertHandler(svc)
 	inboxHandler := NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{}))
 	healthHandler := NewHealthHandler()
-	readyHandler := NewReadyHandler(&mockDBPinger{}, &mockRabbitMQHealthChecker{healthy: true})
-	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler)
+	readyHandler := NewReadyHandler(&mockDBPinger{})
+	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
+	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 }
 
 func realizarSolicitud(router *gin.Engine, headers map[string]string, body interface{}) *httptest.ResponseRecorder {

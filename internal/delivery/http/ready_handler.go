@@ -17,32 +17,22 @@ type dbPinger interface {
 	PingContext(ctx context.Context) error
 }
 
-// rabbitMQHealthChecker permite que /ready refleje el estado real de la
-// conexión AMQP sin acoplar este paquete a la librería del broker.
-type rabbitMQHealthChecker interface {
-	Healthy() bool
-}
-
 // ReadyHandler expone la señal de readiness: si el servicio puede atender
 // tráfico ahora mismo, según sus dependencias esenciales — aquellas sin las
-// que ningún endpoint funciona. Vehicle queda deliberadamente afuera: su
-// indisponibilidad se maneja por request vía circuit breaker (503/502), no
-// sacando la instancia entera de circulación — GET /alerts/inbox sigue
-// funcionando aunque Vehicle esté caído.
+// que ningún endpoint funciona.
 type ReadyHandler struct {
-	db       dbPinger
-	rabbitMQ rabbitMQHealthChecker
+	db dbPinger
 }
 
 // NewReadyHandler construye el handler a partir de las dependencias
 // esenciales cuyo estado se refleja en la respuesta.
-func NewReadyHandler(db dbPinger, rabbitMQ rabbitMQHealthChecker) *ReadyHandler {
-	return &ReadyHandler{db: db, rabbitMQ: rabbitMQ}
+func NewReadyHandler(db dbPinger) *ReadyHandler {
+	return &ReadyHandler{db: db}
 }
 
-// Check responde 503 si la base de datos no responde o si RabbitMQ está
-// caído, 200 si ambas dependencias esenciales están sanas. Kong puede usar
-// esta señal (no /health) para sacar la instancia del balanceo.
+// Check responde 503 si la base de datos no responde,
+// 200 si está sana. Kong puede usar esta señal para sacar
+// la instancia del balanceo.
 func (h *ReadyHandler) Check(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), readinessCheckTimeout)
 	defer cancel()
@@ -51,9 +41,6 @@ func (h *ReadyHandler) Check(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "degraded", "database": "down"})
 		return
 	}
-	if !h.rabbitMQ.Healthy() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "degraded", "rabbitmq": "down"})
-		return
-	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

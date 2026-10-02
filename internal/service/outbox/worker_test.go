@@ -210,3 +210,35 @@ func TestRun_SeDetieneAlCancelarElContexto(t *testing.T) {
 		t.Fatal("Run no se detuvo tras cancelar el contexto")
 	}
 }
+
+func TestHealthy_ReflejaSiElWorkerPuedeLeerElOutbox(t *testing.T) {
+	repo := &mockOutboxRepo{fetchErr: errors.New("db caída")}
+	w := NewWorker(repo, &mockPublisher{}, 20)
+
+	if !w.Healthy() {
+		t.Fatal("un worker recién creado debe reportarse sano")
+	}
+
+	_, _ = w.ProcessBatch(context.Background())
+	if w.Healthy() {
+		t.Error("tras fallar FetchPending el worker debe reportarse no sano")
+	}
+
+	repo.fetchErr = nil
+	_, _ = w.ProcessBatch(context.Background())
+	if !w.Healthy() {
+		t.Error("tras un ciclo exitoso el worker debe volver a sano")
+	}
+}
+
+func TestHealthy_UnBrokerCaidoNoMarcaAlWorkerComoNoSano(t *testing.T) {
+	event := domain.OutboxEvent{ID: uuid.New(), IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed}
+	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}}
+	w := NewWorker(repo, &mockPublisher{err: errors.New("broker caído")}, 20)
+
+	_, _ = w.ProcessBatch(context.Background())
+
+	if !w.Healthy() {
+		t.Error("un fallo de publish no debe marcar al worker como no sano: el evento queda pendiente y se reintenta")
+	}
+}

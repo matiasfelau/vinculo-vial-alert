@@ -2,6 +2,9 @@ services:
   alert:
     build: .
     container_name: vinculo-vial-alert
+    # Mayor que SHUTDOWN_TIMEOUT_MS (8 s por defecto): el drenado debe terminar
+    # antes de que el orquestador mande SIGKILL.
+    stop_grace_period: 10s
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     environment:

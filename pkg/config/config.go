@@ -23,10 +23,13 @@ type Config struct {
 	RabbitMQURL                    string
 	RabbitMQExchange               string
 	RabbitMQPublishTimeout         time.Duration
+	HTTPReadHeaderTimeout          time.Duration
 	HTTPReadTimeout                time.Duration
 	HTTPWriteTimeout               time.Duration
 	OutboxWorkerInterval           time.Duration
 	OutboxWorkerBatchSize          int
+	HTTPIdleTimeout                time.Duration
+	ShutdownTimeout                time.Duration
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -87,17 +90,29 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("DATABASE_URL inválida: %w", err)
 	}
 
+	httpReadHeaderTimeoutMS, err := strconv.Atoi(getEnvDefault("HTTP_READ_HEADER_TIMEOUT_MS", "2000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("HTTP_READ_HEADER_TIMEOUT_MS inválido: %w", err)
+	}
+	cfg.HTTPReadHeaderTimeout = time.Duration(httpReadHeaderTimeoutMS) * time.Millisecond
+
 	httpReadTimeoutMS, err := strconv.Atoi(getEnvDefault("HTTP_READ_TIMEOUT_MS", "5000"))
 	if err != nil {
 		return Config{}, fmt.Errorf("HTTP_READ_TIMEOUT_MS inválido: %w", err)
 	}
 	cfg.HTTPReadTimeout = time.Duration(httpReadTimeoutMS) * time.Millisecond
 
-	httpWriteTimeoutMS, err := strconv.Atoi(getEnvDefault("HTTP_WRITE_TIMEOUT_MS", "10000"))
+	httpWriteTimeoutMS, err := strconv.Atoi(getEnvDefault("HTTP_WRITE_TIMEOUT_MS", "8000"))
 	if err != nil {
 		return Config{}, fmt.Errorf("HTTP_WRITE_TIMEOUT_MS inválido: %w", err)
 	}
 	cfg.HTTPWriteTimeout = time.Duration(httpWriteTimeoutMS) * time.Millisecond
+
+	httpIdleTimeoutMS, err := strconv.Atoi(getEnvDefault("HTTP_IDLE_TIMEOUT_MS", "30000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("HTTP_IDLE_TIMEOUT_MS inválido: %w", err)
+	}
+	cfg.HTTPIdleTimeout = time.Duration(httpIdleTimeoutMS) * time.Millisecond
 
 	rabbitPublishTimeoutMS, err := strconv.Atoi(getEnvDefault("RABBITMQ_PUBLISH_TIMEOUT_MS", "2000"))
 	if err != nil {
@@ -110,6 +125,12 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("OUTBOX_WORKER_INTERVAL_MS inválido: %w", err)
 	}
 	cfg.OutboxWorkerInterval = time.Duration(outboxIntervalMS) * time.Millisecond
+
+	shutdownTimeoutMS, err := strconv.Atoi(getEnvDefault("SHUTDOWN_TIMEOUT_MS", "8000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("SHUTDOWN_TIMEOUT_MS inválido: %w", err)
+	}
+	cfg.ShutdownTimeout = time.Duration(shutdownTimeoutMS) * time.Millisecond
 
 	outboxBatchSize, err := strconv.Atoi(getEnvDefault("OUTBOX_WORKER_BATCH_SIZE", "20"))
 	if err != nil {

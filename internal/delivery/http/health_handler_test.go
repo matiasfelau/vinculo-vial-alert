@@ -11,10 +11,11 @@ import (
 func nuevoRouterHealthDePrueba() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	healthHandler := NewHealthHandler()
-	readyHandler := NewReadyHandler(&mockDBPinger{}, &mockRabbitMQHealthChecker{healthy: true})
+	readyHandler := NewReadyHandler(&mockDBPinger{})
+	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
 	alertHandler := NewAlertHandler(nil)
 	inboxHandler := NewInboxHandler(nil)
-	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler)
+	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 }
 
 func TestHealthCheck_SiempreDevuelve200(t *testing.T) {
