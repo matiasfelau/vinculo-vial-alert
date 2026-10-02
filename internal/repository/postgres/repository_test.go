@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -95,7 +96,7 @@ func TestAlertRepository_Create_RespetaContextoYaVencidoDelLlamador(t *testing.T
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if err := repo.Create(ctx, alert, nil); err == nil {
+	if err := repo.Create(ctx, alert, nil, nil); err == nil {
 		t.Fatal("se esperaba error al persistir con un contexto ya cancelado")
 	}
 }
@@ -118,7 +119,7 @@ func TestAlertRepository_Create_DeadlineVencido_ClasificaComoErrDatabaseUnavaila
 		CreatedAt: time.Now().UTC(),
 	}
 
-	err := repo.Create(ctx, alert, nil)
+	err := repo.Create(ctx, alert, nil, nil)
 	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrDatabaseUnavailable", err)
 	}
@@ -135,7 +136,7 @@ func TestAlertRepository_Create_PersisteSoloIssuerIDYAlertType(t *testing.T) {
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
 	}
 
-	if err := repo.Create(context.Background(), alert, nil); err != nil {
+	if err := repo.Create(context.Background(), alert, nil, nil); err != nil {
 		t.Fatalf("Create devolvió error inesperado: %v", err)
 	}
 
@@ -217,7 +218,7 @@ func TestAlertRepository_Create_PersisteDestinatariosEnLaMismaTransaccion(t *tes
 	ownerA := uuid.New()
 	ownerB := uuid.New()
 
-	if err := repo.Create(context.Background(), alert, []uuid.UUID{ownerA, ownerB}); err != nil {
+	if err := repo.Create(context.Background(), alert, []uuid.UUID{ownerA, ownerB}, nil); err != nil {
 		t.Fatalf("Create devolvió error inesperado: %v", err)
 	}
 
@@ -239,6 +240,140 @@ func TestAlertRepository_Create_PersisteDestinatariosEnLaMismaTransaccion(t *tes
 	}
 }
 
+func TestAlertRepository_Create_PersisteElEventoDeOutboxEnLaMismaTransaccion(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+	ownerA := uuid.New()
+	ownerB := uuid.New()
+	outboxEvent := &domain.OutboxEvent{
+		ID:        uuid.New(),
+		IssuerID:  alert.IssuerID,
+		AlertType: alert.AlertType,
+		OwnerIDs:  []uuid.UUID{ownerA, ownerB},
+		CreatedAt: alert.CreatedAt,
+	}
+
+	if err := repo.Create(context.Background(), alert, []uuid.UUID{ownerA, ownerB}, outboxEvent); err != nil {
+		t.Fatalf("Create devolvió error inesperado: %v", err)
+	}
+
+	// Proyección explícita sin created_at/sent_at: el driver de SQLite no
+	// reconoce "timestamptz" como columna de fecha y GORM fallaría al
+	// escanearlas directamente a OutboxEventModel.CreatedAt (time.Time) —
+	// el mismo motivo documentado en inboxRow (inbox_repository.go).
+	var issuerID uuid.UUID
+	var alertType, status, ownerIDsRaw string
+	row := db.Table("outbox_events").
+		Select("issuer_id", "alert_type", "status", "owner_ids").
+		Where("id = ?", outboxEvent.ID).Row()
+	if err := row.Scan(&issuerID, &alertType, &status, &ownerIDsRaw); err != nil {
+		t.Fatalf("no se pudo leer el evento de outbox persistido: %v", err)
+	}
+	if status != outboxStatusPending {
+		t.Errorf("status = %q, se esperaba %q", status, outboxStatusPending)
+	}
+	if issuerID != alert.IssuerID {
+		t.Errorf("issuer_id = %v, se esperaba %v", issuerID, alert.IssuerID)
+	}
+	if alertType != string(alert.AlertType) {
+		t.Errorf("alert_type = %v, se esperaba %v", alertType, alert.AlertType)
+	}
+
+	var rawOwnerIDs []string
+	if err := json.Unmarshal([]byte(ownerIDsRaw), &rawOwnerIDs); err != nil {
+		t.Fatalf("owner_ids no es JSON válido: %v", err)
+	}
+	if len(rawOwnerIDs) != 2 {
+		t.Errorf("owner_ids = %v, se esperaban 2 elementos", rawOwnerIDs)
+	}
+}
+
+func TestAlertRepository_Create_SinEventoDeOutbox_NoPersisteFilaDeOutbox(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	if err := repo.Create(context.Background(), alert, nil, nil); err != nil {
+		t.Fatalf("Create devolvió error inesperado: %v", err)
+	}
+
+	var total int64
+	if err := db.Table("outbox_events").Count(&total).Error; err != nil {
+		t.Fatalf("no se pudo consultar outbox_events: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("no debía persistirse ningún evento de outbox sin outboxEvent, se encontraron %d", total)
+	}
+}
+
+func TestAlertRepository_Create_RollbackCompletoSiFallaElInsertDelOutbox(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	repo := NewAlertRepository(db)
+
+	// Pre-insertar una fila de outbox para forzar una violación de PK cuando
+	// Create intente insertar la suya con el mismo ID.
+	outboxID := uuid.New()
+	if err := db.Create(&OutboxEventModel{
+		ID:        outboxID,
+		IssuerID:  uuid.New(),
+		AlertType: string(domain.AlertTypeCrashed),
+		OwnerIDs:  "[]",
+		Status:    outboxStatusPending,
+		CreatedAt: time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatalf("no se pudo preparar la fila de outbox en conflicto: %v", err)
+	}
+
+	alert := &domain.AlertHistory{
+		ID:        uuid.New(),
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+		CreatedAt: time.Now().UTC(),
+	}
+	ownerID := uuid.New()
+	outboxEvent := &domain.OutboxEvent{
+		ID:        outboxID, // colisiona con la fila ya insertada
+		IssuerID:  alert.IssuerID,
+		AlertType: alert.AlertType,
+		OwnerIDs:  []uuid.UUID{ownerID},
+		CreatedAt: alert.CreatedAt,
+	}
+
+	err := repo.Create(context.Background(), alert, []uuid.UUID{ownerID}, outboxEvent)
+	if err == nil {
+		t.Fatal("se esperaba error por violación de PK en outbox_events")
+	}
+
+	var alertas int64
+	if err := db.Table("alerts").Where("id = ?", alert.ID).Count(&alertas).Error; err != nil {
+		t.Fatalf("no se pudo consultar alerts: %v", err)
+	}
+	if alertas != 0 {
+		t.Error("la alerta no debía quedar persistida: el fallo al insertar el evento de outbox debe revertir toda la transacción")
+	}
+
+	var destinos int64
+	if err := db.Table("alert_destinations").Where("alert_id = ?", alert.ID).Count(&destinos).Error; err != nil {
+		t.Fatalf("no se pudo consultar alert_destinations: %v", err)
+	}
+	if destinos != 0 {
+		t.Error("no debía quedar ningún destinatario persistido tras el rollback")
+	}
+}
+
 func TestAlertRepository_Create_SinDestinatarios_PersisteSoloLaAlerta(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewAlertRepository(db)
@@ -250,7 +385,7 @@ func TestAlertRepository_Create_SinDestinatarios_PersisteSoloLaAlerta(t *testing
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if err := repo.Create(context.Background(), alert, nil); err != nil {
+	if err := repo.Create(context.Background(), alert, nil, nil); err != nil {
 		t.Fatalf("Create devolvió error inesperado: %v", err)
 	}
 
@@ -278,7 +413,7 @@ func TestAlertRepository_Create_RollbackSiFallaInsertDeDestinos(t *testing.T) {
 	// la transacción.
 	ownerDuplicado := uuid.New()
 
-	err := repo.Create(context.Background(), alert, []uuid.UUID{ownerDuplicado, ownerDuplicado})
+	err := repo.Create(context.Background(), alert, []uuid.UUID{ownerDuplicado, ownerDuplicado}, nil)
 	if err == nil {
 		t.Fatal("se esperaba error por violación del índice único de alert_destinations")
 	}

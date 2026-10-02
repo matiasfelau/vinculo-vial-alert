@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -15,6 +16,7 @@ import (
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
 	inboxsvc "vinculo-vial-alert/internal/service/inbox"
+	outboxsvc "vinculo-vial-alert/internal/service/outbox"
 	"vinculo-vial-alert/pkg/config"
 )
 
@@ -59,6 +61,7 @@ func main() {
 
 	repo := repopostgres.NewAlertRepository(db)
 	inboxRepo := repopostgres.NewInboxRepository(db)
+	outboxRepo := repopostgres.NewOutboxRepository(db)
 	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout, cfg.InternalServiceToken)
 	vehicleBreaker := circuitbreaker.New(circuitbreaker.Config{
 		FailureThreshold: cfg.VehicleBreakerFailureThreshold,
@@ -67,7 +70,14 @@ func main() {
 	vehicleResolver := vehicle.NewBreakerResolver(vehicleClient, vehicleBreaker)
 	publisher := deliveryevents.NewPublisher(rabbitConn, cfg.RabbitMQExchange, cfg.RabbitMQPublishTimeout)
 
-	service := alertsvc.NewCreateAlertService(repo, vehicleResolver, publisher)
+	// El worker de outbox publica en background: CreateAlertService ya no
+	// depende de RabbitMQ en absoluto, así que POST /alerts no se ve
+	// afectado por la disponibilidad del broker (más allá de que el evento
+	// tarde en salir mientras el worker reintenta).
+	outboxWorker := outboxsvc.NewWorker(outboxRepo, publisher, cfg.OutboxWorkerBatchSize)
+	go outboxWorker.Run(context.Background(), cfg.OutboxWorkerInterval)
+
+	service := alertsvc.NewCreateAlertService(repo, vehicleResolver)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)

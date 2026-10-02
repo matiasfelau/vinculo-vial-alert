@@ -25,6 +25,8 @@ type Config struct {
 	RabbitMQPublishTimeout         time.Duration
 	HTTPReadTimeout                time.Duration
 	HTTPWriteTimeout               time.Duration
+	OutboxWorkerInterval           time.Duration
+	OutboxWorkerBatchSize          int
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -102,6 +104,18 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("RABBITMQ_PUBLISH_TIMEOUT_MS inválido: %w", err)
 	}
 	cfg.RabbitMQPublishTimeout = time.Duration(rabbitPublishTimeoutMS) * time.Millisecond
+
+	outboxIntervalMS, err := strconv.Atoi(getEnvDefault("OUTBOX_WORKER_INTERVAL_MS", "2000"))
+	if err != nil {
+		return Config{}, fmt.Errorf("OUTBOX_WORKER_INTERVAL_MS inválido: %w", err)
+	}
+	cfg.OutboxWorkerInterval = time.Duration(outboxIntervalMS) * time.Millisecond
+
+	outboxBatchSize, err := strconv.Atoi(getEnvDefault("OUTBOX_WORKER_BATCH_SIZE", "20"))
+	if err != nil {
+		return Config{}, fmt.Errorf("OUTBOX_WORKER_BATCH_SIZE inválido: %w", err)
+	}
+	cfg.OutboxWorkerBatchSize = outboxBatchSize
 
 	return cfg, nil
 }

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -20,9 +21,11 @@ func NewAlertRepository(db *gorm.DB) *AlertRepository {
 	return &AlertRepository{db: db}
 }
 
-// Create persiste la alerta y sus destinatarios en una única transacción:
-// si falla el INSERT de alert_destinations, no debe quedar la alerta huérfana.
-func (r *AlertRepository) Create(ctx context.Context, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID) error {
+// Create persiste la alerta, sus destinatarios y el evento de outbox (si lo
+// hay) en una única transacción: si falla cualquiera de los tres INSERT, no
+// debe quedar nada huérfano — ni una alerta sin destinatarios, ni un evento
+// de outbox por una alerta que no llegó a guardarse.
+func (r *AlertRepository) Create(ctx context.Context, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID, outboxEvent *domain.OutboxEvent) error {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
@@ -33,19 +36,31 @@ func (r *AlertRepository) Create(ctx context.Context, alert *domain.AlertHistory
 			return err
 		}
 
-		if len(destinationOwnerIDs) == 0 {
-			return nil
-		}
-
-		destinations := make([]AlertDestinationModel, len(destinationOwnerIDs))
-		for i, ownerID := range destinationOwnerIDs {
-			destinations[i] = AlertDestinationModel{
-				ID:      uuid.New(),
-				AlertID: model.ID,
-				OwnerID: ownerID,
+		if len(destinationOwnerIDs) > 0 {
+			destinations := make([]AlertDestinationModel, len(destinationOwnerIDs))
+			for i, ownerID := range destinationOwnerIDs {
+				destinations[i] = AlertDestinationModel{
+					ID:      uuid.New(),
+					AlertID: model.ID,
+					OwnerID: ownerID,
+				}
+			}
+			if err := tx.Create(&destinations).Error; err != nil {
+				return err
 			}
 		}
-		return tx.Create(&destinations).Error
+
+		if outboxEvent != nil {
+			outboxModel, err := outboxEventToModel(outboxEvent)
+			if err != nil {
+				return fmt.Errorf("alert repository: error al serializar el evento de outbox: %w", err)
+			}
+			if err := tx.Create(&outboxModel).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
 	})
 
 	return classifyDBError(err)

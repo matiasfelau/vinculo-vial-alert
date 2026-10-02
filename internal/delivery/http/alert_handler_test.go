@@ -19,12 +19,14 @@ import (
 type mockRepo struct {
 	created             *domain.AlertHistory
 	createdDestinations []uuid.UUID
+	createdOutboxEvent  *domain.OutboxEvent
 	err                 error
 }
 
-func (m *mockRepo) Create(ctx context.Context, a *domain.AlertHistory, destinationOwnerIDs []uuid.UUID) error {
+func (m *mockRepo) Create(ctx context.Context, a *domain.AlertHistory, destinationOwnerIDs []uuid.UUID, outboxEvent *domain.OutboxEvent) error {
 	m.created = a
 	m.createdDestinations = destinationOwnerIDs
+	m.createdOutboxEvent = outboxEvent
 	return m.err
 }
 
@@ -39,19 +41,9 @@ func (m *mockResolver) ResolveOwners(ctx context.Context, patEnc string) ([]uuid
 	return m.ownerIDs, m.err
 }
 
-type mockPublisher struct {
-	called bool
-	err    error
-}
-
-func (m *mockPublisher) PublishAlertCreated(ctx context.Context, event domain.AlertCreatedEvent) error {
-	m.called = true
-	return m.err
-}
-
-func nuevoRouterDePrueba(repo *mockRepo, resolver *mockResolver, publisher *mockPublisher) *gin.Engine {
+func nuevoRouterDePrueba(repo *mockRepo, resolver *mockResolver) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	svc := alert.NewCreateAlertService(repo, resolver, publisher)
+	svc := alert.NewCreateAlertService(repo, resolver)
 	alertHandler := NewAlertHandler(svc)
 	inboxHandler := NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{}))
 	healthHandler := NewHealthHandler()
@@ -72,7 +64,7 @@ func realizarSolicitud(router *gin.Engine, headers map[string]string, body inter
 }
 
 func TestCreateAlert_SinXUserId_Devuelve401(t *testing.T) {
-	router := nuevoRouterDePrueba(&mockRepo{}, &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}, &mockPublisher{})
+	router := nuevoRouterDePrueba(&mockRepo{}, &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}})
 
 	rec := realizarSolicitud(router, nil, map[string]string{"alert_type": "CRASHED", "pat_enc": "x"})
 
@@ -83,7 +75,7 @@ func TestCreateAlert_SinXUserId_Devuelve401(t *testing.T) {
 
 func TestCreateAlert_AlertTypeInvalido_Devuelve400SinLlamarAVehicle(t *testing.T) {
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	router := nuevoRouterDePrueba(&mockRepo{}, resolver, &mockPublisher{})
+	router := nuevoRouterDePrueba(&mockRepo{}, resolver)
 
 	rec := realizarSolicitud(router,
 		map[string]string{headerUserID: uuid.New().String()},
@@ -101,8 +93,7 @@ func TestCreateAlert_AlertTypeInvalido_Devuelve400SinLlamarAVehicle(t *testing.T
 func TestCreateAlert_BaseDeDatosNoDisponible_Devuelve503(t *testing.T) {
 	repo := &mockRepo{err: domain.ErrDatabaseUnavailable}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{}
-	router := nuevoRouterDePrueba(repo, resolver, publisher)
+	router := nuevoRouterDePrueba(repo, resolver)
 
 	rec := realizarSolicitud(router,
 		map[string]string{headerUserID: uuid.New().String()},
@@ -112,16 +103,12 @@ func TestCreateAlert_BaseDeDatosNoDisponible_Devuelve503(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, se esperaba %d", rec.Code, http.StatusServiceUnavailable)
 	}
-	if publisher.called {
-		t.Error("no debía publicarse si la base de datos no está disponible")
-	}
 }
 
 func TestCreateAlert_VehicleNoDisponible_Devuelve503(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{err: domain.ErrVehicleUnavailable}
-	publisher := &mockPublisher{}
-	router := nuevoRouterDePrueba(repo, resolver, publisher)
+	router := nuevoRouterDePrueba(repo, resolver)
 
 	rec := realizarSolicitud(router,
 		map[string]string{headerUserID: uuid.New().String()},
@@ -134,16 +121,12 @@ func TestCreateAlert_VehicleNoDisponible_Devuelve503(t *testing.T) {
 	if repo.created != nil {
 		t.Error("no debía persistirse si Vehicle no está disponible")
 	}
-	if publisher.called {
-		t.Error("no debía publicarse si Vehicle no está disponible")
-	}
 }
 
 func TestCreateAlert_VehicleRespondeErrorDeServidor_Devuelve502(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{err: domain.ErrVehicleBadResponse}
-	publisher := &mockPublisher{}
-	router := nuevoRouterDePrueba(repo, resolver, publisher)
+	router := nuevoRouterDePrueba(repo, resolver)
 
 	rec := realizarSolicitud(router,
 		map[string]string{headerUserID: uuid.New().String()},
@@ -156,16 +139,12 @@ func TestCreateAlert_VehicleRespondeErrorDeServidor_Devuelve502(t *testing.T) {
 	if repo.created != nil {
 		t.Error("no debía persistirse si Vehicle respondió con un error")
 	}
-	if publisher.called {
-		t.Error("no debía publicarse si Vehicle respondió con un error")
-	}
 }
 
 func TestCreateAlert_VehicleRechazaLaSolicitud_Devuelve502SinConfundirloConIndisponibilidad(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{err: domain.ErrVehicleRejected}
-	publisher := &mockPublisher{}
-	router := nuevoRouterDePrueba(repo, resolver, publisher)
+	router := nuevoRouterDePrueba(repo, resolver)
 
 	rec := realizarSolicitud(router,
 		map[string]string{headerUserID: uuid.New().String()},
@@ -178,16 +157,12 @@ func TestCreateAlert_VehicleRechazaLaSolicitud_Devuelve502SinConfundirloConIndis
 	if repo.created != nil {
 		t.Error("no debía persistirse si Vehicle rechazó la solicitud")
 	}
-	if publisher.called {
-		t.Error("no debía publicarse si Vehicle rechazó la solicitud")
-	}
 }
 
 func TestCreateAlert_CasoExitoso_Devuelve202(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{}
-	router := nuevoRouterDePrueba(repo, resolver, publisher)
+	router := nuevoRouterDePrueba(repo, resolver)
 
 	issuerID := uuid.New()
 	rec := realizarSolicitud(router,
@@ -204,14 +179,14 @@ func TestCreateAlert_CasoExitoso_Devuelve202(t *testing.T) {
 	if repo.created.IssuerID != issuerID {
 		t.Errorf("issuer_id persistido = %v, se esperaba %v", repo.created.IssuerID, issuerID)
 	}
-	if !publisher.called {
-		t.Fatal("debía publicarse el evento")
+	if repo.createdOutboxEvent == nil {
+		t.Fatal("debía encolarse el evento de outbox para publicar en background")
 	}
 }
 
 func TestCreateAlert_JSONMalformado_Devuelve400SinLlamarAVehicle(t *testing.T) {
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	router := nuevoRouterDePrueba(&mockRepo{}, resolver, &mockPublisher{})
+	router := nuevoRouterDePrueba(&mockRepo{}, resolver)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts", bytes.NewReader([]byte("{no es json valido")))
 	req.Header.Set("Content-Type", "application/json")
@@ -227,11 +202,10 @@ func TestCreateAlert_JSONMalformado_Devuelve400SinLlamarAVehicle(t *testing.T) {
 	}
 }
 
-func TestCreateAlert_OwnerIDsVacio_Devuelve202SinPublicar(t *testing.T) {
+func TestCreateAlert_OwnerIDsVacio_Devuelve202SinEncolarEvento(t *testing.T) {
 	repo := &mockRepo{}
 	resolver := &mockResolver{ownerIDs: []uuid.UUID{}}
-	publisher := &mockPublisher{}
-	router := nuevoRouterDePrueba(repo, resolver, publisher)
+	router := nuevoRouterDePrueba(repo, resolver)
 
 	rec := realizarSolicitud(router,
 		map[string]string{headerUserID: uuid.New().String()},
@@ -241,7 +215,7 @@ func TestCreateAlert_OwnerIDsVacio_Devuelve202SinPublicar(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, se esperaba %d", rec.Code, http.StatusAccepted)
 	}
-	if publisher.called {
-		t.Error("no debía publicarse un evento sin destinatarios")
+	if repo.createdOutboxEvent != nil {
+		t.Error("no debía encolarse un evento de outbox sin destinatarios")
 	}
 }
