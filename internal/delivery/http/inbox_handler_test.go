@@ -82,6 +82,17 @@ func TestGetInbox_CursorInvalido_Devuelve400SinConsultarElRepositorio(t *testing
 	}
 }
 
+func TestGetInbox_BaseDeDatosNoDisponible_Devuelve503(t *testing.T) {
+	repo := &mockInboxRepo{err: domain.ErrDatabaseUnavailable}
+	router := nuevoRouterInboxDePrueba(repo)
+
+	rec := realizarSolicitudInbox(router, map[string]string{headerUserID: uuid.New().String()}, "")
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, se esperaba %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestGetInbox_SinAlertas_Devuelve200ConItemsVacio(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
 	router := nuevoRouterInboxDePrueba(repo)

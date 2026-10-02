@@ -28,7 +28,7 @@ func (r *AlertRepository) Create(ctx context.Context, alert *domain.AlertHistory
 
 	model := toModel(alert)
 
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&model).Error; err != nil {
 			return err
 		}
@@ -47,4 +47,6 @@ func (r *AlertRepository) Create(ctx context.Context, alert *domain.AlertHistory
 		}
 		return tx.Create(&destinations).Error
 	})
+
+	return classifyDBError(err)
 }
