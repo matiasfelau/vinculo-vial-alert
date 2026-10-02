@@ -22,9 +22,10 @@ const (
 )
 
 // amqpChannel abstrae el subconjunto del canal AMQP utilizado, para permitir
-// mocks en tests sin depender de un broker real.
+// mocks en tests sin depender de un broker real. PublishAndConfirm publica y
+// espera el publisher confirm del broker antes de devolver.
 type amqpChannel interface {
-	PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
+	PublishAndConfirm(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (acked bool, err error)
 }
 
 // Publisher publica el evento alert.created en el exchange topic de la
@@ -82,7 +83,7 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 	// mandatory=true: si el broker no puede enrutar el mensaje a ninguna
 	// cola, lo devuelve en vez de descartarlo en silencio. Connection
 	// escucha ese retorno vía NotifyReturn y loguea un WARN.
-	err = p.channel.PublishWithContext(ctx, p.exchange, routingKeyAlertCreated, true, false, amqp.Publishing{
+	acked, err := p.channel.PublishAndConfirm(ctx, p.exchange, routingKeyAlertCreated, true, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		Body:         body,
@@ -90,6 +91,10 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 	if err != nil {
 		slog.Error("falla al publicar en rabbitmq", "exchange", p.exchange, "routing_key", routingKeyAlertCreated, "error", err.Error())
 		return fmt.Errorf("rabbitmq publisher: error al publicar el evento en exchange=%s: %w", p.exchange, err)
+	}
+	if !acked {
+		slog.Error("rabbitmq: el broker rechazó (nack) el mensaje", "exchange", p.exchange, "routing_key", routingKeyAlertCreated)
+		return fmt.Errorf("rabbitmq publisher: el broker rechazó (nack) el mensaje en exchange=%s", p.exchange)
 	}
 
 	return nil

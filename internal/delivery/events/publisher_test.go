@@ -18,21 +18,22 @@ type mockChannel struct {
 	key       string
 	mandatory bool
 	msg       amqp.Publishing
+	acked     bool
 	err       error
 	called    bool
 }
 
-func (m *mockChannel) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
+func (m *mockChannel) PublishAndConfirm(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (bool, error) {
 	m.called = true
 	m.exchange = exchange
 	m.key = key
 	m.mandatory = mandatory
 	m.msg = msg
-	return m.err
+	return m.acked, m.err
 }
 
 func TestPublisher_PublishAlertCreated_RespetaEnvelopeEstandar(t *testing.T) {
-	mock := &mockChannel{}
+	mock := &mockChannel{acked: true}
 	publisher := NewPublisher(mock, "vvi.topic.exchange", time.Second)
 
 	issuerID := uuid.New()
@@ -49,7 +50,7 @@ func TestPublisher_PublishAlertCreated_RespetaEnvelopeEstandar(t *testing.T) {
 	}
 
 	if !mock.called {
-		t.Fatal("no se invocó PublishWithContext")
+		t.Fatal("no se invocó PublishAndConfirm")
 	}
 	if mock.exchange != "vvi.topic.exchange" {
 		t.Errorf("exchange = %q, se esperaba vvi.topic.exchange", mock.exchange)
@@ -111,5 +112,20 @@ func TestPublisher_PublishAlertCreated_PropagaErrorDelCanal(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("se esperaba que el error del canal se propagara")
+	}
+}
+
+func TestPublisher_PublishAlertCreated_NackDelBroker_DevuelveError(t *testing.T) {
+	// acked=false sin error de transporte: el broker recibió el publish pero
+	// lo rechazó (nack) explícitamente vía publisher confirm.
+	mock := &mockChannel{acked: false}
+	publisher := NewPublisher(mock, "vvi.topic.exchange", time.Second)
+
+	err := publisher.PublishAlertCreated(context.Background(), domain.AlertCreatedEvent{
+		IssuerID:  uuid.New(),
+		AlertType: domain.AlertTypeCrashed,
+	})
+	if err == nil {
+		t.Fatal("se esperaba error cuando el broker rechaza (nack) el mensaje")
 	}
 }

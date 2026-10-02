@@ -47,6 +47,10 @@ func main() {
 		log.Fatalf("error al migrar el esquema: %v", err)
 	}
 
+	// Connect solo devuelve error si el exchange no existe (error de
+	// despliegue): un broker inalcanzable no lo hace fallar, arranca en modo
+	// degradado y reconecta en background, para que las rutas que no
+	// publican (ej. GET /alerts/inbox) sigan sirviendo.
 	rabbitConn, err := deliveryevents.Connect(cfg.RabbitMQURL, cfg.RabbitMQExchange)
 	if err != nil {
 		log.Fatalf("error al conectar con RabbitMQ: %v", err)

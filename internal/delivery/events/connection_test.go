@@ -29,25 +29,28 @@ func TestNextDelay_DuplicaHastaElTope(t *testing.T) {
 	}
 }
 
-func TestConnection_PublishWithContext_SinConexionSana_FallaDeInmediatoSinPanic(t *testing.T) {
-	// Sin canal real: si PublishWithContext no verificara healthy/channel
+func TestConnection_PublishAndConfirm_SinConexionSana_FallaDeInmediatoSinPanic(t *testing.T) {
+	// Sin canal real: si PublishAndConfirm no verificara healthy/channel
 	// antes de usarlos, esto paniquearía con nil pointer dereference en vez
 	// de devolver error.
 	conn := &Connection{healthy: false}
 
-	err := conn.PublishWithContext(context.Background(), "exchange", "routing.key", false, false, amqp.Publishing{})
+	acked, err := conn.PublishAndConfirm(context.Background(), "exchange", "routing.key", false, false, amqp.Publishing{})
 
 	if err == nil {
 		t.Fatal("se esperaba error al publicar sin conexión sana")
 	}
+	if acked {
+		t.Error("acked no debía ser true ante un error")
+	}
 }
 
-func TestConnection_PublishWithContext_ChannelNilAunqueHealthy_FallaSinPanic(t *testing.T) {
+func TestConnection_PublishAndConfirm_ChannelNilAunqueHealthy_FallaSinPanic(t *testing.T) {
 	// Ventana teórica entre reconexión y asignación del canal: healthy=true
 	// pero channel todavía nil no debe paniquear.
 	conn := &Connection{healthy: true}
 
-	err := conn.PublishWithContext(context.Background(), "exchange", "routing.key", false, false, amqp.Publishing{})
+	_, err := conn.PublishAndConfirm(context.Background(), "exchange", "routing.key", false, false, amqp.Publishing{})
 
 	if err == nil {
 		t.Fatal("se esperaba error al publicar con canal nil")
@@ -66,22 +69,33 @@ func TestConnection_Healthy_RefejaElEstadoInterno(t *testing.T) {
 	}
 }
 
-func TestConnect_ServidorInalcanzable_DevuelveErrorSinBloquearIndefinidamente(t *testing.T) {
+func TestConnect_BrokerInalcanzable_NoFallaYArrancaEnModoDegradado(t *testing.T) {
+	// Un broker inalcanzable no es un error de despliegue (a diferencia de un
+	// exchange faltante): el servicio debe arrancar igual, en modo
+	// degradado, para que las rutas que no publican sigan funcionando.
 	done := make(chan struct{})
+	var conn *Connection
 	var err error
 
 	go func() {
-		_, err = Connect("amqp://127.0.0.1:1/", "test.exchange")
+		conn, err = Connect("amqp://127.0.0.1:1/", "test.exchange")
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		if err == nil {
-			t.Fatal("se esperaba error al conectar contra un puerto sin listener")
+		if err != nil {
+			t.Fatalf("Connect no debía fallar ante un broker inalcanzable, error = %v", err)
 		}
+		if conn == nil {
+			t.Fatal("se esperaba una Connection válida en modo degradado")
+		}
+		if conn.Healthy() {
+			t.Error("Healthy() = true, se esperaba false: el broker está inalcanzable")
+		}
+		conn.Close()
 	case <-time.After(5 * time.Second):
-		t.Fatal("Connect no debe bloquear indefinidamente ante un servidor inalcanzable")
+		t.Fatal("Connect no debe bloquear indefinidamente ante un broker inalcanzable")
 	}
 }
 
