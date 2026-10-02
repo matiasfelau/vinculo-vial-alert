@@ -242,3 +242,48 @@ func TestHealthy_UnBrokerCaidoNoMarcaAlWorkerComoNoSano(t *testing.T) {
 		t.Error("un fallo de publish no debe marcar al worker como no sano: el evento queda pendiente y se reintenta")
 	}
 }
+
+// publisherBloqueante permite cancelar el contexto de Run a mitad de un
+// publish y comprobar que el lote en curso se completa.
+type publisherBloqueante struct {
+	entro    chan struct{}
+	liberar  chan struct{}
+	ctxErrAl error
+}
+
+func (p *publisherBloqueante) PublishAlertCreated(ctx context.Context, event domain.AlertCreatedEvent) error {
+	close(p.entro)
+	<-p.liberar
+	p.ctxErrAl = ctx.Err()
+	return nil
+}
+
+func TestRun_UnaCancelacionAMitadDeUnPublishNoCortaElLoteEnCurso(t *testing.T) {
+	event := domain.OutboxEvent{ID: uuid.New(), IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed}
+	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}}
+	pub := &publisherBloqueante{entro: make(chan struct{}), liberar: make(chan struct{})}
+	w := NewWorker(repo, pub, 20)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx, time.Millisecond)
+		close(done)
+	}()
+
+	<-pub.entro // el publish está en curso
+	cancel()    // se apaga el proceso a mitad del publish
+	close(pub.liberar)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run no terminó tras completar el lote en curso")
+	}
+	if pub.ctxErrAl != nil {
+		t.Errorf("el publish en curso vio su contexto cancelado (%v): debía poder completarse", pub.ctxErrAl)
+	}
+	if len(repo.sentIDs) != 1 || repo.sentIDs[0] != event.ID {
+		t.Errorf("sentIDs = %v: el evento publicado debía marcarse enviado aunque se apagara a mitad", repo.sentIDs)
+	}
+}

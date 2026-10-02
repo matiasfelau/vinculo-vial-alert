@@ -82,8 +82,8 @@ func (w *Worker) ProcessBatch(ctx context.Context) (int, error) {
 	return sent, nil
 }
 
-// Run ejecuta ProcessBatch en un loop con el intervalo dado, hasta que ctx
-// se cancele.
+// Run ejecuta ProcessBatch en un loop con el intervalo dado. Al cancelarse
+// ctx deja de iniciar ciclos nuevos y termina el que esté en curso.
 func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -93,7 +93,12 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := w.ProcessBatch(ctx); err != nil {
+			// El lote en curso se completa aunque ctx se cancele a mitad: cortar un
+			// publish después de que el broker ya aceptó el mensaje dejaría la fila
+			// en pending y se republicaría al reiniciar. Cada operación ya está
+			// acotada por su propio timeout (publish y consultas), y quien apaga el
+			// proceso espera a Run con un presupuesto finito.
+			if _, err := w.ProcessBatch(context.WithoutCancel(ctx)); err != nil {
 				slog.Error("outbox worker: error al procesar el lote", "error", err.Error())
 			}
 		}
