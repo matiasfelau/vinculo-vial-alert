@@ -26,17 +26,26 @@ func (m *mockDBPinger) PingContext(ctx context.Context) error {
 	return m.err
 }
 
-func nuevoRouterReadyDePrueba(db *mockDBPinger, rabbitMQ *mockRabbitMQHealthChecker) *gin.Engine {
+type mockOutboxWorkerHealthChecker struct {
+	healthy bool
+}
+
+func (m *mockOutboxWorkerHealthChecker) Healthy() bool {
+	return m.healthy
+}
+
+func nuevoRouterReadyDePrueba(db *mockDBPinger) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	healthHandler := NewHealthHandler()
-	readyHandler := NewReadyHandler(db, rabbitMQ)
+	readyHandler := NewReadyHandler(db)
+	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
 	alertHandler := NewAlertHandler(nil)
 	inboxHandler := NewInboxHandler(nil)
-	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler)
+	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 }
 
 func TestReadyCheck_TodoSano_Devuelve200(t *testing.T) {
-	router := nuevoRouterReadyDePrueba(&mockDBPinger{}, &mockRabbitMQHealthChecker{healthy: true})
+	router := nuevoRouterReadyDePrueba(&mockDBPinger{})
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
@@ -48,10 +57,7 @@ func TestReadyCheck_TodoSano_Devuelve200(t *testing.T) {
 }
 
 func TestReadyCheck_BaseDeDatosCaida_Devuelve503(t *testing.T) {
-	router := nuevoRouterReadyDePrueba(
-		&mockDBPinger{err: errors.New("conexión rechazada")},
-		&mockRabbitMQHealthChecker{healthy: true},
-	)
+	router := nuevoRouterReadyDePrueba(&mockDBPinger{err: errors.New("conexión rechazada")})
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
@@ -59,17 +65,5 @@ func TestReadyCheck_BaseDeDatosCaida_Devuelve503(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, se esperaba %d: /ready debe reflejar que la base de datos no responde", rec.Code, http.StatusServiceUnavailable)
-	}
-}
-
-func TestReadyCheck_RabbitMQCaido_Devuelve503(t *testing.T) {
-	router := nuevoRouterReadyDePrueba(&mockDBPinger{}, &mockRabbitMQHealthChecker{healthy: false})
-
-	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, se esperaba %d: /ready debe reflejar que RabbitMQ está caído", rec.Code, http.StatusServiceUnavailable)
 	}
 }

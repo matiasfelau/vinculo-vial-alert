@@ -4,6 +4,9 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	gormpostgres "gorm.io/driver/postgres"
@@ -75,27 +78,59 @@ func main() {
 	// afectado por la disponibilidad del broker (más allá de que el evento
 	// tarde en salir mientras el worker reintenta).
 	outboxWorker := outboxsvc.NewWorker(outboxRepo, publisher, cfg.OutboxWorkerBatchSize)
-	go outboxWorker.Run(context.Background(), cfg.OutboxWorkerInterval)
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		outboxWorker.Run(workerCtx, cfg.OutboxWorkerInterval)
+	}()
 
 	service := alertsvc.NewCreateAlertService(repo, vehicleResolver)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
 	healthHandler := deliveryhttp.NewHealthHandler()
-	readyHandler := deliveryhttp.NewReadyHandler(sqlDB, rabbitConn)
-	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler)
+	depsHandler := deliveryhttp.NewDepsHandler(rabbitConn, outboxWorker)
+	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
+	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 
-	// http.Server manual en vez de router.Run(): Gin no permite configurar
-	// Read/WriteTimeout a través de ese atajo, y sin ellos un cliente lento
-	// (o que nunca cierra la conexión) retiene la goroutine del request sin
-	// límite de tiempo.
 	server := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      router,
-		ReadTimeout:  cfg.HTTPReadTimeout,
-		WriteTimeout: cfg.HTTPWriteTimeout,
+		Addr:              ":" + cfg.Port,
+		Handler:           router,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("error al iniciar el servidor HTTP: %v", err)
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("error al iniciar el servidor HTTP: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("iniciando apagado ordenado...")
+
+	// Un único presupuesto para drenar requests y cortar el worker. Tiene que
+	// ser menor que el período de gracia del orquestador (stop_grace_period
+	// en docker-compose.yml, 10 s): si no, SIGKILL llega antes de terminar.
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("error durante el drenado de requests: %v", err)
 	}
+
+	stopWorker()
+	select {
+	case <-workerDone:
+	case <-ctx.Done():
+		log.Println("el worker de outbox no terminó a tiempo; los eventos pendientes se reintentan al reiniciar")
+	}
+
+	log.Println("servicio detenido.")
 }
