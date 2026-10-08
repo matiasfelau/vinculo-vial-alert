@@ -29,14 +29,14 @@ var newOutboxColumns = []struct{ name, sqlType string }{
 var legacyOutboxColumns = []string{"issuer_id", "alert_type", "owner_ids"}
 
 // AutoMigrate crea o actualiza el esquema de las tablas alerts,
-// alert_destinations y outbox_events. Antes de eso convierte el outbox del
+// alert_destinations, outbox_events, alert_attempts e issuer_restrictions. Antes de eso convierte el outbox del
 // esquema viejo al genérico (ver migrateLegacyOutbox). AlertModel se migra
 // primero: AlertDestinationModel depende de su FK.
 func AutoMigrate(db *gorm.DB) error {
 	if err := migrateLegacyOutbox(db); err != nil {
 		return fmt.Errorf("migración del outbox genérico: %w", err)
 	}
-	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &OutboxEventModel{})
+	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{})
 }
 
 // migrateLegacyOutbox convierte outbox_events del esquema viejo

@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"vinculo-vial-alert/internal/domain"
 	"vinculo-vial-alert/internal/service/alert"
+	"vinculo-vial-alert/internal/service/attempt"
 	"vinculo-vial-alert/internal/service/inbox"
 )
 
@@ -36,9 +38,9 @@ type mockResolver struct {
 	called   bool
 }
 
-func (m *mockResolver) ResolveOwners(ctx context.Context, patEnc string) ([]uuid.UUID, error) {
+func (m *mockResolver) ResolveOwners(ctx context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
 	m.called = true
-	return m.ownerIDs, m.err
+	return domain.ResolvedOwners{OwnerIDs: m.ownerIDs}, m.err
 }
 
 func nuevoRouterDePrueba(repo *mockRepo, resolver *mockResolver) *gin.Engine {
@@ -49,7 +51,8 @@ func nuevoRouterDePrueba(repo *mockRepo, resolver *mockResolver) *gin.Engine {
 	healthHandler := NewHealthHandler()
 	readyHandler := NewReadyHandler(&mockDBPinger{})
 	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
-	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
+	attemptHandler := NewAttemptHandler(attempt.NewCreateAttemptService(&mockRestrictions{}, resolver, &mockAttempts{}, time.Minute), time.Second)
+	return NewRouter(alertHandler, attemptHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 }
 
 func realizarSolicitud(router *gin.Engine, headers map[string]string, body interface{}) *httptest.ResponseRecorder {

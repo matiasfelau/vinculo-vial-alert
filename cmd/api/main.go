@@ -18,6 +18,7 @@ import (
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
+	attemptsvc "vinculo-vial-alert/internal/service/attempt"
 	inboxsvc "vinculo-vial-alert/internal/service/inbox"
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
 	"vinculo-vial-alert/pkg/config"
@@ -63,6 +64,8 @@ func main() {
 	defer rabbitConn.Close()
 
 	repo := repopostgres.NewAlertRepository(db)
+	attemptRepo := repopostgres.NewAttemptRepository(db)
+	restrictionRepo := repopostgres.NewRestrictionRepository(db)
 	inboxRepo := repopostgres.NewInboxRepository(db)
 	outboxRepo := repopostgres.NewOutboxRepository(db)
 	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout, cfg.InternalServiceToken)
@@ -86,13 +89,15 @@ func main() {
 	}()
 
 	service := alertsvc.NewCreateAlertService(repo, vehicleResolver)
+	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, vehicleResolver, attemptRepo, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
 	alertHandler := deliveryhttp.NewAlertHandler(service)
+	attemptHandler := deliveryhttp.NewAttemptHandler(attemptService, cfg.RetryAfter)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
 	healthHandler := deliveryhttp.NewHealthHandler()
 	depsHandler := deliveryhttp.NewDepsHandler(rabbitConn, outboxWorker)
 	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
-	router := deliveryhttp.NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
+	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,

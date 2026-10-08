@@ -27,6 +27,20 @@ var ErrVehicleBadResponse = errors.New("el servicio de vehículos respondió con
 // de la alerta falló por un problema de integración ajeno a ella.
 var ErrVehicleRejected = errors.New("el servicio de vehículos rechazó la solicitud")
 
+// ErrInvalidPlateCryptogram indica que vinculo-vial-vehicle rechazó el
+// criptograma pat_enc o el formato de la patente (HTTP 400). Es un error del
+// cliente de la app, no una caída del upstream: no cuenta para el circuit
+// breaker y el handler lo mapea a 400.
+var ErrInvalidPlateCryptogram = errors.New("el criptograma o el formato de la patente es inválido")
+
+// ErrIssuerUnderReview indica que el emisor está en revisión
+// (issuer_restrictions) y no puede crear alertas. El handler lo mapea a 403.
+var ErrIssuerUnderReview = errors.New("el emisor está en revisión")
+
+// ErrNotInNetwork indica que la patente no pertenece a ningún dueño distinto
+// del emisor: no hay a quién avisar. El handler lo mapea a 404.
+var ErrNotInNetwork = errors.New("el vehículo no está en la red")
+
 // ErrInvalidCursor indica que el cursor de paginación del inbox no pudo
 // decodificarse. El handler debe mapear este error a 400 sin exponer el
 // detalle interno del formato del cursor.
