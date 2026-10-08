@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -39,13 +40,24 @@ func (m *mockOutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, lastErr s
 }
 
 type mockPublisher struct {
-	publishedEvents []domain.AlertCreatedEvent
+	publishedEvents []domain.OutboxEvent
 	err             error
 }
 
-func (m *mockPublisher) PublishAlertCreated(ctx context.Context, event domain.AlertCreatedEvent) error {
+func (m *mockPublisher) Publish(ctx context.Context, event domain.OutboxEvent) error {
 	m.publishedEvents = append(m.publishedEvents, event)
 	return m.err
+}
+
+func nuevoEvento() domain.OutboxEvent {
+	issuerID := uuid.New()
+	return domain.OutboxEvent{
+		ID:        uuid.New(),
+		EventType: domain.EventTypeAlertCreated,
+		Actor:     &issuerID,
+		Payload:   json.RawMessage(`{"owner_ids":[],"alert_type":"CRASHED"}`),
+		CreatedAt: time.Now().UTC(),
+	}
 }
 
 func TestProcessBatch_SinEventosPendientes_NoHaceNada(t *testing.T) {
@@ -67,13 +79,7 @@ func TestProcessBatch_SinEventosPendientes_NoHaceNada(t *testing.T) {
 }
 
 func TestProcessBatch_PublicaYMarcaComoEnviado(t *testing.T) {
-	event := domain.OutboxEvent{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		OwnerIDs:  []uuid.UUID{uuid.New()},
-		CreatedAt: time.Now().UTC(),
-	}
+	event := nuevoEvento()
 	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}}
 	publisher := &mockPublisher{}
 	w := NewWorker(repo, publisher, 20)
@@ -95,13 +101,7 @@ func TestProcessBatch_PublicaYMarcaComoEnviado(t *testing.T) {
 }
 
 func TestProcessBatch_ReutilizaElEventIDDelOutboxAlPublicar(t *testing.T) {
-	event := domain.OutboxEvent{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		OwnerIDs:  []uuid.UUID{uuid.New()},
-		CreatedAt: time.Now().UTC(),
-	}
+	event := nuevoEvento()
 	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}}
 	publisher := &mockPublisher{}
 	w := NewWorker(repo, publisher, 20)
@@ -113,13 +113,13 @@ func TestProcessBatch_ReutilizaElEventIDDelOutboxAlPublicar(t *testing.T) {
 	if len(publisher.publishedEvents) != 1 {
 		t.Fatalf("se publicaron %d eventos, se esperaba 1", len(publisher.publishedEvents))
 	}
-	if publisher.publishedEvents[0].EventID != event.ID {
-		t.Errorf("EventID publicado = %v, se esperaba reutilizar el ID del outbox %v", publisher.publishedEvents[0].EventID, event.ID)
+	if publisher.publishedEvents[0].ID != event.ID {
+		t.Errorf("EventID publicado = %v, se esperaba reutilizar el ID del outbox %v", publisher.publishedEvents[0].ID, event.ID)
 	}
 }
 
 func TestProcessBatch_FalloAlPublicar_MarcaComoFallidoYNoCuentaComoEnviado(t *testing.T) {
-	event := domain.OutboxEvent{ID: uuid.New(), IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed}
+	event := nuevoEvento()
 	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}}
 	publisher := &mockPublisher{err: errors.New("rabbitmq no disponible")}
 	w := NewWorker(repo, publisher, 20)
@@ -157,7 +157,7 @@ func TestProcessBatch_FalloAlMarcarEnviado_NoCuentaComoEnviadoAunqueSePublico(t 
 	// (ej. DB caída justo después). El evento queda pendiente para el
 	// próximo ciclo, a costa de una posible publicación duplicada —
 	// mitigada porque reutiliza el mismo EventID (ver ProcessBatch).
-	event := domain.OutboxEvent{ID: uuid.New(), IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed}
+	event := nuevoEvento()
 	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}, markSentErr: errors.New("db caída")}
 	publisher := &mockPublisher{}
 	w := NewWorker(repo, publisher, 20)
@@ -232,7 +232,7 @@ func TestHealthy_ReflejaSiElWorkerPuedeLeerElOutbox(t *testing.T) {
 }
 
 func TestHealthy_UnBrokerCaidoNoMarcaAlWorkerComoNoSano(t *testing.T) {
-	event := domain.OutboxEvent{ID: uuid.New(), IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed}
+	event := nuevoEvento()
 	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}}
 	w := NewWorker(repo, &mockPublisher{err: errors.New("broker caído")}, 20)
 
@@ -251,7 +251,7 @@ type publisherBloqueante struct {
 	ctxErrAl error
 }
 
-func (p *publisherBloqueante) PublishAlertCreated(ctx context.Context, event domain.AlertCreatedEvent) error {
+func (p *publisherBloqueante) Publish(ctx context.Context, event domain.OutboxEvent) error {
 	close(p.entro)
 	<-p.liberar
 	p.ctxErrAl = ctx.Err()
@@ -259,7 +259,7 @@ func (p *publisherBloqueante) PublishAlertCreated(ctx context.Context, event dom
 }
 
 func TestRun_UnaCancelacionAMitadDeUnPublishNoCortaElLoteEnCurso(t *testing.T) {
-	event := domain.OutboxEvent{ID: uuid.New(), IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed}
+	event := nuevoEvento()
 	repo := &mockOutboxRepo{pending: []domain.OutboxEvent{event}}
 	pub := &publisherBloqueante{entro: make(chan struct{}), liberar: make(chan struct{})}
 	w := NewWorker(repo, pub, 20)

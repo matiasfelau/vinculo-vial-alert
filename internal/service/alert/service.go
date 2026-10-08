@@ -70,13 +70,11 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	// evento: un evento sin destinatarios es basura para el consumidor.
 	var outboxEvent *domain.OutboxEvent
 	if len(destinatarios) > 0 {
-		outboxEvent = &domain.OutboxEvent{
-			ID:        uuid.New(),
-			IssuerID:  input.IssuerID,
-			AlertType: input.AlertType,
-			OwnerIDs:  destinatarios,
-			CreatedAt: now,
+		event, err := domain.NewAlertCreatedEvent(uuid.New(), input.IssuerID, input.AlertType, destinatarios, now)
+		if err != nil {
+			return fmt.Errorf("create alert service: error al construir el evento alert.created: %w", err)
 		}
+		outboxEvent = &event
 	}
 
 	if err := s.repo.Create(ctx, alertHistory, destinatarios, outboxEvent); err != nil {

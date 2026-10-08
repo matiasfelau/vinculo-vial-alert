@@ -252,13 +252,11 @@ func TestAlertRepository_Create_PersisteElEventoDeOutboxEnLaMismaTransaccion(t *
 	}
 	ownerA := uuid.New()
 	ownerB := uuid.New()
-	outboxEvent := &domain.OutboxEvent{
-		ID:        uuid.New(),
-		IssuerID:  alert.IssuerID,
-		AlertType: alert.AlertType,
-		OwnerIDs:  []uuid.UUID{ownerA, ownerB},
-		CreatedAt: alert.CreatedAt,
+	event, err := domain.NewAlertCreatedEvent(uuid.New(), alert.IssuerID, alert.AlertType, []uuid.UUID{ownerA, ownerB}, alert.CreatedAt)
+	if err != nil {
+		t.Fatalf("no se pudo construir el evento: %v", err)
 	}
+	outboxEvent := &event
 
 	if err := repo.Create(context.Background(), alert, []uuid.UUID{ownerA, ownerB}, outboxEvent); err != nil {
 		t.Fatalf("Create devolvió error inesperado: %v", err)
@@ -268,30 +266,30 @@ func TestAlertRepository_Create_PersisteElEventoDeOutboxEnLaMismaTransaccion(t *
 	// reconoce "timestamptz" como columna de fecha y GORM fallaría al
 	// escanearlas directamente a OutboxEventModel.CreatedAt (time.Time) —
 	// el mismo motivo documentado en inboxRow (inbox_repository.go).
-	var issuerID uuid.UUID
-	var alertType, status, ownerIDsRaw string
+	var actor uuid.UUID
+	var eventType, status, payloadRaw string
 	row := db.Table("outbox_events").
-		Select("issuer_id", "alert_type", "status", "owner_ids").
+		Select("actor", "event_type", "status", "payload").
 		Where("id = ?", outboxEvent.ID).Row()
-	if err := row.Scan(&issuerID, &alertType, &status, &ownerIDsRaw); err != nil {
+	if err := row.Scan(&actor, &eventType, &status, &payloadRaw); err != nil {
 		t.Fatalf("no se pudo leer el evento de outbox persistido: %v", err)
 	}
 	if status != outboxStatusPending {
 		t.Errorf("status = %q, se esperaba %q", status, outboxStatusPending)
 	}
-	if issuerID != alert.IssuerID {
-		t.Errorf("issuer_id = %v, se esperaba %v", issuerID, alert.IssuerID)
+	if actor != alert.IssuerID {
+		t.Errorf("actor = %v, se esperaba %v", actor, alert.IssuerID)
 	}
-	if alertType != string(alert.AlertType) {
-		t.Errorf("alert_type = %v, se esperaba %v", alertType, alert.AlertType)
+	if eventType != domain.EventTypeAlertCreated {
+		t.Errorf("event_type = %v, se esperaba %v", eventType, domain.EventTypeAlertCreated)
 	}
 
-	var rawOwnerIDs []string
-	if err := json.Unmarshal([]byte(ownerIDsRaw), &rawOwnerIDs); err != nil {
-		t.Fatalf("owner_ids no es JSON válido: %v", err)
+	var payload domain.AlertCreatedPayload
+	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
+		t.Fatalf("payload no es JSON válido: %v", err)
 	}
-	if len(rawOwnerIDs) != 2 {
-		t.Errorf("owner_ids = %v, se esperaban 2 elementos", rawOwnerIDs)
+	if len(payload.OwnerIDs) != 2 {
+		t.Errorf("owner_ids = %v, se esperaban 2 elementos", payload.OwnerIDs)
 	}
 }
 
@@ -328,9 +326,8 @@ func TestAlertRepository_Create_RollbackCompletoSiFallaElInsertDelOutbox(t *test
 	outboxID := uuid.New()
 	if err := db.Create(&OutboxEventModel{
 		ID:        outboxID,
-		IssuerID:  uuid.New(),
-		AlertType: string(domain.AlertTypeCrashed),
-		OwnerIDs:  "[]",
+		EventType: domain.EventTypeAlertCreated,
+		Payload:   "{}",
 		Status:    outboxStatusPending,
 		CreatedAt: time.Now().UTC(),
 	}).Error; err != nil {
@@ -344,15 +341,14 @@ func TestAlertRepository_Create_RollbackCompletoSiFallaElInsertDelOutbox(t *test
 		CreatedAt: time.Now().UTC(),
 	}
 	ownerID := uuid.New()
-	outboxEvent := &domain.OutboxEvent{
-		ID:        outboxID, // colisiona con la fila ya insertada
-		IssuerID:  alert.IssuerID,
-		AlertType: alert.AlertType,
-		OwnerIDs:  []uuid.UUID{ownerID},
-		CreatedAt: alert.CreatedAt,
+	// outboxID colisiona con la fila ya insertada.
+	event, err := domain.NewAlertCreatedEvent(outboxID, alert.IssuerID, alert.AlertType, []uuid.UUID{ownerID}, alert.CreatedAt)
+	if err != nil {
+		t.Fatalf("no se pudo construir el evento: %v", err)
 	}
+	outboxEvent := &event
 
-	err := repo.Create(context.Background(), alert, []uuid.UUID{ownerID}, outboxEvent)
+	err = repo.Create(context.Background(), alert, []uuid.UUID{ownerID}, outboxEvent)
 	if err == nil {
 		t.Fatal("se esperaba error por violación de PK en outbox_events")
 	}

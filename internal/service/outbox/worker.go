@@ -46,7 +46,7 @@ func (w *Worker) Healthy() bool {
 // o si el publish se confirma pero el propio MarkSent falla, el evento
 // queda pendiente y el próximo ciclo lo reintenta — a costa de una posible
 // publicación duplicada en ese segundo caso, mitigada porque el evento
-// reutiliza el mismo EventID entre reintentos (ver domain.AlertCreatedEvent)
+// reutiliza el mismo ID entre reintentos (ver domain.EventPublisher)
 // para que un consumidor que deduplique por event_id no la cuente dos veces.
 func (w *Worker) ProcessBatch(ctx context.Context) (int, error) {
 	events, err := w.repo.FetchPending(ctx, w.batchSize)
@@ -58,13 +58,7 @@ func (w *Worker) ProcessBatch(ctx context.Context) (int, error) {
 	w.healthy.Store(true)
 	sent := 0
 	for _, event := range events {
-		err := w.publisher.PublishAlertCreated(ctx, domain.AlertCreatedEvent{
-			EventID:   event.ID,
-			IssuerID:  event.IssuerID,
-			AlertType: event.AlertType,
-			OwnerIDs:  event.OwnerIDs,
-		})
-		if err != nil {
+		if err := w.publisher.Publish(ctx, event); err != nil {
 			slog.Error("outbox worker: falla al publicar, se reintentará", "event_id", event.ID, "error", err.Error())
 			if markErr := w.repo.MarkFailed(ctx, event.ID, err.Error()); markErr != nil {
 				slog.Error("outbox worker: falla al registrar el intento fallido", "event_id", event.ID, "error", markErr.Error())

@@ -11,15 +11,15 @@ const (
 	outboxStatusSent    = "sent"
 )
 
-// OutboxEventModel es la representación GORM de la tabla outbox_events.
-// owner_ids viaja como JSON en una columna de texto: es un detalle de
-// implementación interno del outbox, nunca se consulta relacionalmente ni
-// se expone fuera de este paquete.
+// OutboxEventModel es la representación GORM de la tabla outbox_events, el
+// outbox genérico de la plataforma: event_type es el eventType y la routing
+// key, actor es el campo actor del envelope (null si el evento no lleva
+// identificadores de usuario) y payload es el JSON del payload.
 type OutboxEventModel struct {
 	ID        uuid.UUID  `gorm:"type:uuid;primaryKey"`
-	IssuerID  uuid.UUID  `gorm:"type:uuid;not null"`
-	AlertType string     `gorm:"column:alert_type;type:varchar(64);not null"`
-	OwnerIDs  string     `gorm:"column:owner_ids;type:text;not null"`
+	EventType string     `gorm:"column:event_type;type:varchar(64);not null"`
+	Actor     *uuid.UUID `gorm:"type:uuid"`
+	Payload   string     `gorm:"type:jsonb;not null"`
 	Status    string     `gorm:"type:varchar(16);not null;default:pending;index:idx_outbox_events_status_created_at,priority:1"`
 	Attempts  int        `gorm:"not null;default:0"`
 	LastError *string    `gorm:"column:last_error;type:text"`

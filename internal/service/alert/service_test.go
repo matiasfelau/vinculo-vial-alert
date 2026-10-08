@@ -2,7 +2,9 @@ package alert
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -96,10 +98,26 @@ func TestExecute_IssuerEntreLosDuenos_SeFiltraDelEventoDeOutbox(t *testing.T) {
 	if repo.createdOutboxEvent == nil {
 		t.Fatal("debía encolarse un evento de outbox para el resto de los dueños")
 	}
-	if len(repo.createdOutboxEvent.OwnerIDs) != 1 || repo.createdOutboxEvent.OwnerIDs[0] != otroOwner {
-		t.Errorf("owner_ids del evento = %v, se esperaba solo [%v]", repo.createdOutboxEvent.OwnerIDs, otroOwner)
+	if repo.createdOutboxEvent.EventType != domain.EventTypeAlertCreated {
+		t.Errorf("event_type = %q, se esperaba %q", repo.createdOutboxEvent.EventType, domain.EventTypeAlertCreated)
 	}
-	for _, id := range repo.createdOutboxEvent.OwnerIDs {
+	if repo.createdOutboxEvent.Actor == nil || *repo.createdOutboxEvent.Actor != issuerID {
+		t.Errorf("actor = %v, se esperaba el emisor %v", repo.createdOutboxEvent.Actor, issuerID)
+	}
+	var payload domain.AlertCreatedPayload
+	if err := json.Unmarshal(repo.createdOutboxEvent.Payload, &payload); err != nil {
+		t.Fatalf("el payload del evento no es JSON válido: %v", err)
+	}
+	if payload.AlertType != domain.AlertTypeCrashed {
+		t.Errorf("alert_type del payload = %v, se esperaba %v", payload.AlertType, domain.AlertTypeCrashed)
+	}
+	if len(payload.OwnerIDs) != 1 || payload.OwnerIDs[0] != otroOwner {
+		t.Errorf("owner_ids del evento = %v, se esperaba solo [%v]", payload.OwnerIDs, otroOwner)
+	}
+	if strings.Contains(string(repo.createdOutboxEvent.Payload), issuerID.String()) {
+		t.Error("el payload no debe contener al emisor: va únicamente en actor")
+	}
+	for _, id := range payload.OwnerIDs {
 		if id == issuerID {
 			t.Error("el emisor no debe recibir su propia alerta")
 		}
