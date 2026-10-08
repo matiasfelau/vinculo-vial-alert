@@ -34,6 +34,11 @@ var ErrEvidenceUnavailable = errors.New("el almacén de evidencia no está dispo
 // para el circuit breaker.
 var ErrEvidenceStoreRejected = errors.New("el almacén de evidencia rechazó la solicitud")
 
+// ErrEvidenceAlreadyExists indica que la clave ya existe y Put, que es
+// condicional, no la sobrescribió. Para los originales significa que otra
+// solicitud ya consumió el mismo intento.
+var ErrEvidenceAlreadyExists = errors.New("el objeto de evidencia ya existe")
+
 // EvidenceObject es un objeto leído del almacén. Quien lo recibe es dueño de
 // Body y debe cerrarlo.
 type EvidenceObject struct {
@@ -45,7 +50,9 @@ type EvidenceObject struct {
 // Las claves viajan por el bus; nunca URLs. Todas las operaciones llevan
 // timeout y circuit breaker propios, y ninguna reintenta.
 type EvidenceStore interface {
-	// Put escribe el objeto con la etiqueta de retención indicada.
+	// Put escribe el objeto con la etiqueta de retención indicada, solo si la
+	// clave no existe (If-None-Match: *). Si ya existe devuelve
+	// ErrEvidenceAlreadyExists y no la toca.
 	Put(ctx context.Context, key string, body []byte, status EvidenceStatus) error
 	// Get abre el objeto para leerlo en streaming. Devuelve
 	// ErrEvidenceNotFound si no existe.
