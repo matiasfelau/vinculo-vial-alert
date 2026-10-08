@@ -518,3 +518,31 @@ func TestHealthy_UnaPruebaSemiAbiertaYaNoEsCircuitoAbierto(t *testing.T) {
 		t.Error("tras una prueba exitosa el store debe volver a reportarse sano")
 	}
 }
+
+func TestPut_EsCondicionalConIfNoneMatch(t *testing.T) {
+	api := &fakeS3{}
+
+	if err := nuevoStore(api).Put(context.Background(), testKey, []byte("x"), domain.EvidenceStatusPending); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if aws.ToString(api.putInput.IfNoneMatch) != "*" {
+		t.Errorf("IfNoneMatch = %q, se esperaba *", aws.ToString(api.putInput.IfNoneMatch))
+	}
+}
+
+func TestPut_412Y409_DevuelvenErrEvidenceAlreadyExistsSinAbrirElCircuito(t *testing.T) {
+	for _, status := range []int{http.StatusPreconditionFailed, http.StatusConflict} {
+		api := &fakeS3{err: httpError(status)}
+		store := nuevoStore(api) // umbral 3
+
+		for i := 0; i < 10; i++ {
+			if err := store.Put(context.Background(), testKey, []byte("x"), domain.EvidenceStatusPending); !errors.Is(err, domain.ErrEvidenceAlreadyExists) {
+				t.Fatalf("estado %d: error = %v, se esperaba ErrEvidenceAlreadyExists", status, err)
+			}
+		}
+		if api.callCount() != 10 {
+			t.Errorf("estado %d: llamadas = %d, un 412/409 no debe abrir el circuito", status, api.callCount())
+		}
+	}
+}

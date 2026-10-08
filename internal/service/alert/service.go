@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,6 +104,14 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	evidence, refs := s.describeEvidence(alertID, input.Files, now)
 
 	if err := s.uploadOriginals(ctx, evidence, input.Files); err != nil {
+		var inUse *attemptInUseError
+		if errors.As(err, &inUse) {
+			// Otra solicitud ya escribió esas claves (PUT condicional rechazado
+			// con 412): el intento está en uso. Solo se borra lo que esta
+			// solicitud confirmó haber escrito; el resto puede ser del ganador.
+			s.deleteUploaded(ctx, inUse.written)
+			return CreateAlertResult{}, domain.ErrAttemptExpired
+		}
 		s.deleteUploaded(ctx, evidence)
 		return CreateAlertResult{}, err
 	}
@@ -162,20 +171,51 @@ func (s *CreateAlertService) describeEvidence(alertID uuid.UUID, files []domain.
 	return evidence, refs
 }
 
+// attemptInUseError indica que algún PUT condicional recibió 412: el intento
+// ya lo consumió otra solicitud. written son las evidencias que esta
+// solicitud sí escribió (PUT confirmado).
+type attemptInUseError struct {
+	written []domain.Evidence
+}
+
+func (e *attemptInUseError) Error() string {
+	return domain.ErrAttemptExpired.Error()
+}
+
 // uploadOriginals sube todos los ciphertext en paralelo con tag
-// status=pending, dentro de un único presupuesto de tiempo. Si cualquiera
-// falla, cancela el resto y devuelve el primer error.
+// status=pending y de forma condicional (If-None-Match: *), dentro de un único
+// presupuesto de tiempo. Si cualquiera falla, cancela el resto y devuelve el
+// primer error. Si alguna clave ya existía devuelve *attemptInUseError.
 func (s *CreateAlertService) uploadOriginals(ctx context.Context, evidence []domain.Evidence, files []domain.EvidenceUpload) error {
 	ctx, cancel := context.WithTimeout(ctx, s.putBudget)
 	defer cancel()
 
+	confirmed := make([]bool, len(files))
+	var conflict atomic.Bool
 	group, groupCtx := errgroup.WithContext(ctx)
 	for i := range files {
 		group.Go(func() error {
-			return s.store.Put(groupCtx, evidence[i].S3Key, files[i].Ciphertext, domain.EvidenceStatusPending)
+			err := s.store.Put(groupCtx, evidence[i].S3Key, files[i].Ciphertext, domain.EvidenceStatusPending)
+			switch {
+			case err == nil:
+				confirmed[i] = true
+			case errors.Is(err, domain.ErrEvidenceAlreadyExists):
+				conflict.Store(true)
+			}
+			return err
 		})
 	}
-	return group.Wait()
+	err := group.Wait()
+	if err != nil && conflict.Load() {
+		var written []domain.Evidence
+		for i, ok := range confirmed {
+			if ok {
+				written = append(written, evidence[i])
+			}
+		}
+		return &attemptInUseError{written: written}
+	}
+	return err
 }
 
 // cleanupAfterFailedCreate borra los objetos subidos cuando la transacción

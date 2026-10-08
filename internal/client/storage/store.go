@@ -35,6 +35,9 @@ const (
 	// loop dentro de un request. El reintento es del llamador (cola retry).
 	sdkMaxAttempts = 1
 
+	// ifNoneMatchAny hace condicional el PUT: solo escribe si la clave no existe.
+	ifNoneMatchAny = "*"
+
 	codeNoSuchKey = "NoSuchKey"
 	codeNotFound  = "NotFound"
 	stateHalfOpen = "half-open"
@@ -124,6 +127,7 @@ func (s *Store) Put(ctx context.Context, key string, body []byte, status domain.
 			Body:        bytes.NewReader(body),
 			ContentType: aws.String(contentTypeCiphertext),
 			Tagging:     aws.String(tagKeyStatus + "=" + string(status)),
+			IfNoneMatch: aws.String(ifNoneMatchAny),
 		})
 		return err
 	})
@@ -203,7 +207,7 @@ func (s *Store) guard(op string, call func() error) error {
 	classified := classify(err)
 
 	switch {
-	case classified == nil, errors.Is(classified, domain.ErrEvidenceNotFound), errors.Is(classified, domain.ErrEvidenceStoreRejected):
+	case classified == nil, errors.Is(classified, domain.ErrEvidenceNotFound), errors.Is(classified, domain.ErrEvidenceAlreadyExists), errors.Is(classified, domain.ErrEvidenceStoreRejected):
 		// S3 respondió con normalidad: aun un 404 o un 403 prueban que el
 		// destino está vivo, y una prueba half-open no puede quedar sin
 		// resolver.
@@ -226,6 +230,7 @@ func (s *Store) guard(op string, call func() error) error {
 // classify traduce un error del SDK al error de dominio correspondiente:
 //   - nil → nil;
 //   - NoSuchKey / 404 → ErrEvidenceNotFound;
+//   - 412 / 409 en un PUT condicional → ErrEvidenceAlreadyExists;
 //   - cancelación del llamador → context.Canceled;
 //   - timeout, error de conexión, 5xx y 429 → ErrEvidenceUnavailable;
 //   - cualquier otro 4xx (p. ej. AccessDenied) → ErrEvidenceStoreRejected.
@@ -254,6 +259,10 @@ func classify(err error) error {
 	if errors.As(err, &respErr) {
 		status := respErr.HTTPStatusCode()
 		switch {
+		case status == http.StatusPreconditionFailed, status == http.StatusConflict:
+			// 412: la clave ya existe. 409 (ConditionalRequestConflict): otra
+			// escritura condicional sobre la misma clave está en curso.
+			return fmt.Errorf("%w: %v", domain.ErrEvidenceAlreadyExists, err)
 		case status == http.StatusNotFound:
 			return fmt.Errorf("%w: %v", domain.ErrEvidenceNotFound, err)
 		case status >= http.StatusInternalServerError, status == http.StatusTooManyRequests:
