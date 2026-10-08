@@ -43,10 +43,15 @@ func NewCreateAlertService(repo domain.AlertRepository, resolver domain.OwnerRes
 // Vehicle esté inalcanzable o la base de datos no responda (el llamador
 // mapea esos errores a 503).
 func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput) error {
-	ownerIDs, err := s.resolver.ResolveOwners(ctx, input.PatEnc)
+	// Vehicle exige un alert_id para cifrar la patente hacia IA. Este flujo
+	// previo al intento no usa ese criptograma, así que se genera uno
+	// descartable. El flujo se reemplaza por intento + evidencia en
+	// feature/us08-evidence-ingest.
+	resolved, err := s.resolver.ResolveOwners(ctx, input.PatEnc, uuid.New())
 	if err != nil {
 		return err
 	}
+	ownerIDs := resolved.OwnerIDs
 
 	// El emisor nunca se autonotifica: se filtra antes de persistir el
 	// destino del evento y antes de encolarlo para publicar.

@@ -3,6 +3,7 @@ package config
 import (
 	"net/url"
 	"testing"
+	"time"
 )
 
 func TestWithStatementTimeout_AgregaElParametroPreservandoElResto(t *testing.T) {
@@ -59,6 +60,8 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("RABBITMQ_EXCHANGE", "vvi.topic.exchange")
 	t.Setenv("RABBITMQ_PREFETCH", "")
 	t.Setenv("MAX_RETRIES", "")
+	t.Setenv("ATTEMPT_TTL_SECONDS", "")
+	t.Setenv("RETRY_AFTER_SECONDS", "")
 }
 
 func TestLoad_ConsumoRabbitMQ_Defaults(t *testing.T) {
@@ -100,6 +103,56 @@ func TestLoad_ConsumoRabbitMQ_ValoresInvalidosAbortanElArranque(t *testing.T) {
 		"prefetch negativo":      {"RABBITMQ_PREFETCH", "-1"},
 		"reintentos no numérico": {"MAX_RETRIES", "muchos"},
 		"reintentos negativos":   {"MAX_RETRIES", "-1"},
+	}
+
+	for nombre, caso := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv(caso[0], caso[1])
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() debía devolver un error con %s=%s", caso[0], caso[1])
+			}
+		})
+	}
+}
+
+func TestLoad_Intento_Defaults(t *testing.T) {
+	setRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.AttemptTTL != 600*time.Second {
+		t.Errorf("AttemptTTL = %v, se esperaba 10m", cfg.AttemptTTL)
+	}
+	if cfg.RetryAfter != 5*time.Second {
+		t.Errorf("RetryAfter = %v, se esperaba 5s", cfg.RetryAfter)
+	}
+}
+
+func TestLoad_Intento_ValoresExplicitos(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("ATTEMPT_TTL_SECONDS", "120")
+	t.Setenv("RETRY_AFTER_SECONDS", "30")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.AttemptTTL != 120*time.Second || cfg.RetryAfter != 30*time.Second {
+		t.Errorf("AttemptTTL = %v, RetryAfter = %v", cfg.AttemptTTL, cfg.RetryAfter)
+	}
+}
+
+func TestLoad_Intento_ValoresInvalidosAbortanElArranque(t *testing.T) {
+	casos := map[string][2]string{
+		"ttl no numérico":    {"ATTEMPT_TTL_SECONDS", "diez"},
+		"ttl cero":           {"ATTEMPT_TTL_SECONDS", "0"},
+		"ttl negativo":       {"ATTEMPT_TTL_SECONDS", "-5"},
+		"retry-after cero":   {"RETRY_AFTER_SECONDS", "0"},
+		"retry-after no num": {"RETRY_AFTER_SECONDS", "pronto"},
 	}
 
 	for nombre, caso := range casos {

@@ -30,11 +30,13 @@ type mockResolver struct {
 	ownerIDs []uuid.UUID
 	err      error
 	patEnc   string
+	alertID  uuid.UUID
 }
 
-func (m *mockResolver) ResolveOwners(ctx context.Context, patEnc string) ([]uuid.UUID, error) {
+func (m *mockResolver) ResolveOwners(ctx context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
 	m.patEnc = patEnc
-	return m.ownerIDs, m.err
+	m.alertID = alertID
+	return domain.ResolvedOwners{OwnerIDs: m.ownerIDs}, m.err
 }
 
 func TestExecute_ErrorDelResolver_NoPersiste(t *testing.T) {

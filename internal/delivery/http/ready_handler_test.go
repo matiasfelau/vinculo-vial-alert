@@ -41,7 +41,7 @@ func nuevoRouterReadyDePrueba(db *mockDBPinger) *gin.Engine {
 	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
 	alertHandler := NewAlertHandler(nil)
 	inboxHandler := NewInboxHandler(nil)
-	return NewRouter(alertHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
+	return NewRouter(alertHandler, NewAttemptHandler(nil, 0), inboxHandler, healthHandler, readyHandler, depsHandler)
 }
 
 func TestReadyCheck_TodoSano_Devuelve200(t *testing.T) {

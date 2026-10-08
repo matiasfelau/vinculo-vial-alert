@@ -32,6 +32,8 @@ type Config struct {
 	ShutdownTimeout                time.Duration
 	RabbitMQPrefetch               int
 	MaxRetries                     int64
+	AttemptTTL                     time.Duration
+	RetryAfter                     time.Duration
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -157,6 +159,24 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("MAX_RETRIES inválido: no puede ser negativo, vino %d", maxRetries)
 	}
 	cfg.MaxRetries = maxRetries
+
+	attemptTTLSeconds, err := strconv.Atoi(getEnvDefault("ATTEMPT_TTL_SECONDS", "600"))
+	if err != nil {
+		return Config{}, fmt.Errorf("ATTEMPT_TTL_SECONDS inválido: %w", err)
+	}
+	if attemptTTLSeconds < 1 {
+		return Config{}, fmt.Errorf("ATTEMPT_TTL_SECONDS inválido: debe ser mayor o igual a 1, vino %d", attemptTTLSeconds)
+	}
+	cfg.AttemptTTL = time.Duration(attemptTTLSeconds) * time.Second
+
+	retryAfterSeconds, err := strconv.Atoi(getEnvDefault("RETRY_AFTER_SECONDS", "5"))
+	if err != nil {
+		return Config{}, fmt.Errorf("RETRY_AFTER_SECONDS inválido: %w", err)
+	}
+	if retryAfterSeconds < 1 {
+		return Config{}, fmt.Errorf("RETRY_AFTER_SECONDS inválido: debe ser mayor o igual a 1, vino %d", retryAfterSeconds)
+	}
+	cfg.RetryAfter = time.Duration(retryAfterSeconds) * time.Second
 
 	return cfg, nil
 }
