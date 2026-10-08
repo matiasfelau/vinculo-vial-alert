@@ -71,3 +71,36 @@ type AlertEvidenceModel struct {
 func (AlertEvidenceModel) TableName() string {
 	return "alert_evidence"
 }
+
+// AlertFeedbackModel es la representación GORM de la tabla alert_feedback: la
+// valoración (UP/DOWN) que un dueño da a la validación de una alerta. Hay una
+// por dueño y alerta; el borrado de la alerta la arrastra en cascada.
+type AlertFeedbackModel struct {
+	AlertID   uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	OwnerID   uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	Rating    string     `gorm:"type:varchar(4);not null"`
+	CreatedAt time.Time  `gorm:"type:timestamptz;not null"`
+	UpdatedAt time.Time  `gorm:"type:timestamptz;not null"`
+	Alert     AlertModel `gorm:"foreignKey:AlertID;references:ID;constraint:OnDelete:CASCADE"`
+}
+
+// TableName fija el nombre de tabla explícito.
+func (AlertFeedbackModel) TableName() string {
+	return "alert_feedback"
+}
+
+// AlertReportModel es la representación GORM de la tabla alert_reports: el
+// reporte de un dueño contra el emisor de una alerta. La clave primaria
+// (alert_id, owner_id) garantiza un único reporte por dueño y alerta.
+type AlertReportModel struct {
+	AlertID   uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	OwnerID   uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	Reason    string     `gorm:"type:varchar(32);not null"`
+	CreatedAt time.Time  `gorm:"type:timestamptz;not null"`
+	Alert     AlertModel `gorm:"foreignKey:AlertID;references:ID;constraint:OnDelete:CASCADE"`
+}
+
+// TableName fija el nombre de tabla explícito.
+func (AlertReportModel) TableName() string {
+	return "alert_reports"
+}

@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// hoursPerDay convierte los días de retención a duración.
+const hoursPerDay = 24 * time.Hour
+
 // Config agrupa los parámetros de configuración requeridos por el servicio.
 type Config struct {
 	Port                           string
@@ -42,6 +45,7 @@ type Config struct {
 	S3BreakerFailureThreshold      int
 	S3BreakerOpenDuration          time.Duration
 	VerdictQueue                   string
+	EvidenceRetention              time.Duration
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -218,6 +222,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("S3_BREAKER_FAILURE_THRESHOLD inválido: debe ser mayor o igual a 1, vino %d", s3BreakerThreshold)
 	}
 	cfg.S3BreakerFailureThreshold = s3BreakerThreshold
+
+	retentionDays, err := strconv.Atoi(getEnvDefault("EVIDENCE_RETENTION_DAYS", "30"))
+	if err != nil {
+		return Config{}, fmt.Errorf("EVIDENCE_RETENTION_DAYS inválido: %w", err)
+	}
+	if retentionDays < 1 {
+		return Config{}, fmt.Errorf("EVIDENCE_RETENTION_DAYS inválido: debe ser mayor o igual a 1, vino %d", retentionDays)
+	}
+	cfg.EvidenceRetention = time.Duration(retentionDays) * hoursPerDay
 
 	return cfg, nil
 }

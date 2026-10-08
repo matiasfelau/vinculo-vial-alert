@@ -21,6 +21,9 @@ const (
 	codeEvidenceTooLarge       = "EVIDENCE_TOO_LARGE"
 	codeAttemptNotFound        = "ATTEMPT_NOT_FOUND"
 	codeAttemptExpired         = "ATTEMPT_EXPIRED"
+	codeNotFound               = "NOT_FOUND"
+	codeEvidenceExpired        = "EVIDENCE_EXPIRED"
+	codeAlreadyReported        = "ALREADY_REPORTED"
 )
 
 const headerRetryAfter = "Retry-After"

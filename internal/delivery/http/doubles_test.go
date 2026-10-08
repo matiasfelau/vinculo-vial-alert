@@ -1,8 +1,9 @@
 package http
 
 import (
+	"bytes"
 	"context"
-	"errors"
+	"io"
 	"sync"
 	"time"
 
@@ -13,12 +14,14 @@ import (
 	"vinculo-vial-alert/internal/service/alert"
 	"vinculo-vial-alert/internal/service/attempt"
 	"vinculo-vial-alert/internal/service/inbox"
+	"vinculo-vial-alert/internal/service/owner"
 )
 
 const (
 	testMaxPartBytes   = 1024
 	testBucket         = "vinculo-vial-evidence-test"
 	retryAfterDePrueba = 7 * time.Second
+	testRetention      = 30 * 24 * time.Hour
 )
 
 type mockRestrictions struct {
@@ -128,6 +131,7 @@ type mockStore struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	putErr  error
+	getErr  error
 	puts    int
 	deleted []string
 }
@@ -146,8 +150,17 @@ func (m *mockStore) Put(_ context.Context, key string, body []byte, _ domain.Evi
 	return nil
 }
 
-func (m *mockStore) Get(context.Context, string) (domain.EvidenceObject, error) {
-	return domain.EvidenceObject{}, errors.New("no usado")
+func (m *mockStore) Get(_ context.Context, key string) (domain.EvidenceObject, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return domain.EvidenceObject{}, m.getErr
+	}
+	body, ok := m.objects[key]
+	if !ok {
+		return domain.EvidenceObject{}, domain.ErrEvidenceNotFound
+	}
+	return domain.EvidenceObject{Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))}, nil
 }
 
 func (m *mockStore) Tag(context.Context, string, domain.EvidenceStatus) error { return nil }
@@ -160,6 +173,62 @@ func (m *mockStore) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+// mockOwnerRepo es un doble de domain.OwnerAlertRepository que modela la
+// autorización: solo los usuarios de recipients ven la alerta.
+type mockOwnerRepo struct {
+	mu         sync.Mutex
+	recipients map[uuid.UUID]bool
+	access     domain.EvidenceAccess
+	err        error
+	feedback   map[uuid.UUID]domain.Rating
+	reports    map[uuid.UUID]domain.ReportReason
+}
+
+func (m *mockOwnerRepo) FindEvidence(_ context.Context, _, ownerID uuid.UUID, _ domain.EvidenceRole, _ int) (domain.EvidenceAccess, error) {
+	if m.err != nil {
+		return domain.EvidenceAccess{}, m.err
+	}
+	if !m.recipients[ownerID] {
+		return domain.EvidenceAccess{}, domain.ErrAlertNotFound
+	}
+	return m.access, nil
+}
+
+func (m *mockOwnerRepo) UpsertFeedback(_ context.Context, _, ownerID uuid.UUID, rating domain.Rating, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	if !m.recipients[ownerID] {
+		return domain.ErrAlertNotFound
+	}
+	if m.feedback == nil {
+		m.feedback = map[uuid.UUID]domain.Rating{}
+	}
+	m.feedback[ownerID] = rating
+	return nil
+}
+
+func (m *mockOwnerRepo) CreateReport(_ context.Context, _, ownerID uuid.UUID, reason domain.ReportReason, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	if !m.recipients[ownerID] {
+		return domain.ErrAlertNotFound
+	}
+	if _, yaReporto := m.reports[ownerID]; yaReporto {
+		return domain.ErrAlreadyReported
+	}
+	if m.reports == nil {
+		m.reports = map[uuid.UUID]domain.ReportReason{}
+	}
+	m.reports[ownerID] = reason
+	return nil
+}
+
 // testDeps agrupa los dobles con los que se arma el router completo.
 type testDeps struct {
 	restrictions *mockRestrictions
@@ -167,6 +236,7 @@ type testDeps struct {
 	attempts     *mockAttempts
 	alerts       *mockAlerts
 	store        *mockStore
+	owner        *mockOwnerRepo
 }
 
 func nuevasDeps() *testDeps {
@@ -179,6 +249,7 @@ func nuevasDeps() *testDeps {
 		attempts: &mockAttempts{},
 		alerts:   &mockAlerts{},
 		store:    &mockStore{},
+		owner:    &mockOwnerRepo{},
 	}
 }
 
@@ -189,7 +260,8 @@ func (d *testDeps) router() *gin.Engine {
 	return NewRouter(
 		NewAlertHandler(alertService, testMaxPartBytes, retryAfterDePrueba),
 		NewAttemptHandler(attemptService, retryAfterDePrueba),
-		NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{})),
+		NewOwnerHandler(owner.NewService(d.owner, d.store, testRetention), retryAfterDePrueba),
+		NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{}, testRetention)),
 		NewHealthHandler(),
 		NewReadyHandler(&mockDBPinger{}),
 		NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true}),

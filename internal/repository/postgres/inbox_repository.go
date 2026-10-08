@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,19 +12,30 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-// inboxRow es la proyección exacta del JOIN entre alerts y
-// alert_destinations para el inbox. No incluye issuer_id ni owner_id:
-// solo lo que el DTO de salida puede exponer.
+// inboxRow es la proyección exacta del JOIN entre alerts, alert_destinations
+// y las valoraciones y reportes del propio destinatario. No incluye issuer_id
+// ni owner_id: solo lo que el DTO de salida puede exponer.
 //
-// created_at se escanea como string: el driver de PostgreSQL entrega un
-// timestamptz, que database/sql formatea como RFC3339Nano al asignarlo a un
-// *string; el de SQLite (usado en los tests) no reconoce "timestamptz" como
-// columna de fecha y devuelve el texto tal cual lo escribió. createdAtLayouts
-// cubre ambos casos.
+// created_at y validated_at se escanean como string: el driver de PostgreSQL
+// entrega un timestamptz, que database/sql formatea como RFC3339Nano al
+// asignarlo a un *string; el de SQLite (usado en los tests) no reconoce
+// "timestamptz" como columna de fecha y devuelve el texto tal cual lo
+// escribió. createdAtLayouts cubre ambos casos.
 type inboxRow struct {
-	ID        uuid.UUID `gorm:"column:id"`
-	AlertType string    `gorm:"column:alert_type"`
-	CreatedAt string    `gorm:"column:created_at"`
+	ID             uuid.UUID `gorm:"column:id"`
+	AlertType      string    `gorm:"column:alert_type"`
+	CreatedAt      string    `gorm:"column:created_at"`
+	RequiresReview bool      `gorm:"column:requires_review"`
+	ValidatedAt    *string   `gorm:"column:validated_at"`
+	MyFeedback     *string   `gorm:"column:my_feedback"`
+	Reported       bool      `gorm:"column:reported"`
+}
+
+// inboxEvidenceRow es una imagen redactada de una alerta de la página.
+type inboxEvidenceRow struct {
+	AlertID uuid.UUID `gorm:"column:alert_id"`
+	Role    string    `gorm:"column:role"`
+	Idx     int       `gorm:"column:idx"`
 }
 
 var createdAtLayouts = []string{
@@ -44,6 +56,15 @@ func parseCreatedAt(s string) (time.Time, error) {
 	return time.Time{}, lastErr
 }
 
+// evidenceRoleOrder fija el orden en que el buzón lista las imágenes de una
+// alerta: primero el vehículo, luego la patente, el daño y el contexto.
+var evidenceRoleOrder = map[domain.EvidenceRole]int{
+	domain.EvidenceRoleGeneral: 0,
+	domain.EvidenceRolePlate:   1,
+	domain.EvidenceRoleDetail:  2,
+	domain.EvidenceRoleContext: 3,
+}
+
 // InboxRepository implementa domain.InboxRepository sobre GORM/PostgreSQL.
 type InboxRepository struct {
 	db *gorm.DB
@@ -56,18 +77,26 @@ func NewInboxRepository(db *gorm.DB) *InboxRepository {
 }
 
 // FindByOwner ejecuta el JOIN alerts/alert_destinations filtrado por
-// owner_id, con proyección explícita de columnas (prohibido SELECT *),
+// owner_id y por alertas ACTIVE (una alerta pendiente, expirada o rechazada
+// no es visible), con proyección explícita de columnas (prohibido SELECT *),
 // cláusula de tupla del cursor si viene, y LIMIT limit+1 para que el caso
 // de uso pueda detectar si hay próxima página sin un COUNT adicional.
+//
+// La valoración y el reporte del propio destinatario salen de LEFT JOIN
+// acotados a su owner_id, y las imágenes redactadas de toda la página se leen
+// con una única consulta adicional: sin N+1.
 func (r *InboxRepository) FindByOwner(ctx context.Context, ownerID uuid.UUID, cursor *domain.Cursor, limit int) ([]domain.InboxItem, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
 	query := r.db.WithContext(ctx).
 		Table("alerts").
-		Select("alerts.id, alerts.alert_type, alerts.created_at").
+		Select("alerts.id, alerts.alert_type, alerts.created_at, alerts.requires_review, alerts.validated_at, "+
+			"alert_feedback.rating AS my_feedback, alert_reports.owner_id IS NOT NULL AS reported").
 		Joins("JOIN alert_destinations ON alert_destinations.alert_id = alerts.id").
-		Where("alert_destinations.owner_id = ?", ownerID)
+		Joins("LEFT JOIN alert_feedback ON alert_feedback.alert_id = alerts.id AND alert_feedback.owner_id = ?", ownerID).
+		Joins("LEFT JOIN alert_reports ON alert_reports.alert_id = alerts.id AND alert_reports.owner_id = ?", ownerID).
+		Where("alert_destinations.owner_id = ? AND alerts.status = ?", ownerID, string(domain.AlertStatusActive))
 
 	if cursor != nil {
 		// Comparación por tupla (created_at, id) < (cursor.CreatedAt, cursor.ID),
@@ -87,17 +116,84 @@ func (r *InboxRepository) FindByOwner(ctx context.Context, ownerID uuid.UUID, cu
 		return nil, classifyDBError(err)
 	}
 
+	evidence, err := r.redactedEvidenceByAlert(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+
 	items := make([]domain.InboxItem, len(rows))
 	for i, row := range rows {
-		createdAt, err := parseCreatedAt(row.CreatedAt)
+		item, err := inboxItemFromRow(row)
 		if err != nil {
-			return nil, fmt.Errorf("inbox repository: created_at con formato inesperado: %w", err)
+			return nil, err
 		}
-		items[i] = domain.InboxItem{
-			ID:        row.ID,
-			AlertType: domain.AlertType(row.AlertType),
-			CreatedAt: createdAt,
-		}
+		item.Evidence = evidence[row.ID]
+		items[i] = item
 	}
 	return items, nil
+}
+
+func inboxItemFromRow(row inboxRow) (domain.InboxItem, error) {
+	createdAt, err := parseCreatedAt(row.CreatedAt)
+	if err != nil {
+		return domain.InboxItem{}, fmt.Errorf("inbox repository: created_at con formato inesperado: %w", err)
+	}
+
+	item := domain.InboxItem{
+		ID:             row.ID,
+		AlertType:      domain.AlertType(row.AlertType),
+		CreatedAt:      createdAt,
+		RequiresReview: row.RequiresReview,
+		Reported:       row.Reported,
+	}
+	if row.ValidatedAt != nil {
+		validatedAt, err := parseCreatedAt(*row.ValidatedAt)
+		if err != nil {
+			return domain.InboxItem{}, fmt.Errorf("inbox repository: validated_at con formato inesperado: %w", err)
+		}
+		validatedAt = validatedAt.UTC()
+		item.ValidatedAt = &validatedAt
+	}
+	if row.MyFeedback != nil {
+		rating := domain.Rating(*row.MyFeedback)
+		item.MyFeedback = &rating
+	}
+	return item, nil
+}
+
+// redactedEvidenceByAlert lee, con una única consulta, las imágenes redactadas
+// de las alertas de la página, ordenadas por rol e índice.
+func (r *InboxRepository) redactedEvidenceByAlert(ctx context.Context, rows []inboxRow) (map[uuid.UUID][]domain.InboxEvidence, error) {
+	evidence := make(map[uuid.UUID][]domain.InboxEvidence, len(rows))
+	if len(rows) == 0 {
+		return evidence, nil
+	}
+
+	alertIDs := make([]uuid.UUID, len(rows))
+	for i, row := range rows {
+		alertIDs[i] = row.ID
+	}
+
+	var found []inboxEvidenceRow
+	err := r.db.WithContext(ctx).
+		Table("alert_evidence").
+		Select("alert_id, role, idx").
+		Where("kind = ? AND alert_id IN ?", string(domain.EvidenceKindRedacted), alertIDs).
+		Scan(&found).Error
+	if err != nil {
+		return nil, classifyDBError(err)
+	}
+
+	for _, row := range found {
+		evidence[row.AlertID] = append(evidence[row.AlertID], domain.InboxEvidence{Role: domain.EvidenceRole(row.Role), Index: row.Idx})
+	}
+	for _, list := range evidence {
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].Role != list[j].Role {
+				return evidenceRoleOrder[list[i].Role] < evidenceRoleOrder[list[j].Role]
+			}
+			return list[i].Index < list[j].Index
+		})
+	}
+	return evidence, nil
 }

@@ -22,6 +22,7 @@ import (
 	attemptsvc "vinculo-vial-alert/internal/service/attempt"
 	inboxsvc "vinculo-vial-alert/internal/service/inbox"
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
+	ownersvc "vinculo-vial-alert/internal/service/owner"
 	verdictsvc "vinculo-vial-alert/internal/service/verdict"
 	"vinculo-vial-alert/pkg/config"
 )
@@ -125,9 +126,11 @@ func main() {
 
 	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout)
 	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, vehicleResolver, attemptRepo, cfg.AttemptTTL)
-	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
+	inboxService := inboxsvc.NewGetInboxService(inboxRepo, cfg.EvidenceRetention)
+	ownerService := ownersvc.NewService(repopostgres.NewOwnerRepository(db), evidenceStore, cfg.EvidenceRetention)
 	alertHandler := deliveryhttp.NewAlertHandler(service, cfg.EvidenceMaxPartBytes, cfg.RetryAfter)
 	attemptHandler := deliveryhttp.NewAttemptHandler(attemptService, cfg.RetryAfter)
+	ownerHandler := deliveryhttp.NewOwnerHandler(ownerService, cfg.RetryAfter)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
 	healthHandler := deliveryhttp.NewHealthHandler()
 	depsHandler := deliveryhttp.NewDepsHandler(rabbitConn, outboxWorker,
@@ -135,7 +138,7 @@ func main() {
 		deliveryhttp.DependencyCheck{Name: "verdict_consumer", Healthy: verdictStatus.Connected},
 	)
 	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
-	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
+	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, ownerHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
