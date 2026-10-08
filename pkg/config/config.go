@@ -47,6 +47,8 @@ type Config struct {
 	VerdictQueue                   string
 	UserStatusQueue                string
 	EvidenceRetention              time.Duration
+	PendingTimeout                 time.Duration
+	SweeperInterval                time.Duration
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -233,6 +235,19 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("EVIDENCE_RETENTION_DAYS inválido: debe ser mayor o igual a 1, vino %d", retentionDays)
 	}
 	cfg.EvidenceRetention = time.Duration(retentionDays) * hoursPerDay
+
+	pendingTimeoutMinutes, err := strconv.Atoi(getEnvDefault("PENDING_TIMEOUT_MINUTES", "30"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PENDING_TIMEOUT_MINUTES inválido: %w", err)
+	}
+	if pendingTimeoutMinutes < 1 {
+		return Config{}, fmt.Errorf("PENDING_TIMEOUT_MINUTES inválido: debe ser mayor o igual a 1, vino %d", pendingTimeoutMinutes)
+	}
+	cfg.PendingTimeout = time.Duration(pendingTimeoutMinutes) * time.Minute
+
+	if cfg.SweeperInterval, err = parsePositiveMillis("SWEEPER_INTERVAL_MS", "60000"); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
 }
