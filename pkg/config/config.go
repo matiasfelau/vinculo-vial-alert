@@ -30,6 +30,8 @@ type Config struct {
 	OutboxWorkerBatchSize          int
 	HTTPIdleTimeout                time.Duration
 	ShutdownTimeout                time.Duration
+	RabbitMQPrefetch               int
+	MaxRetries                     int64
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -137,6 +139,24 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("OUTBOX_WORKER_BATCH_SIZE inválido: %w", err)
 	}
 	cfg.OutboxWorkerBatchSize = outboxBatchSize
+
+	rabbitPrefetch, err := strconv.Atoi(getEnvDefault("RABBITMQ_PREFETCH", "10"))
+	if err != nil {
+		return Config{}, fmt.Errorf("RABBITMQ_PREFETCH inválido: %w", err)
+	}
+	if rabbitPrefetch < 1 {
+		return Config{}, fmt.Errorf("RABBITMQ_PREFETCH inválido: debe ser mayor o igual a 1, vino %d", rabbitPrefetch)
+	}
+	cfg.RabbitMQPrefetch = rabbitPrefetch
+
+	maxRetries, err := strconv.ParseInt(getEnvDefault("MAX_RETRIES", "5"), 10, 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("MAX_RETRIES inválido: %w", err)
+	}
+	if maxRetries < 0 {
+		return Config{}, fmt.Errorf("MAX_RETRIES inválido: no puede ser negativo, vino %d", maxRetries)
+	}
+	cfg.MaxRetries = maxRetries
 
 	return cfg, nil
 }
