@@ -38,6 +38,7 @@ const (
 	codeNoSuchKey = "NoSuchKey"
 	codeNotFound  = "NotFound"
 	stateHalfOpen = "half-open"
+	stateOpen     = "open"
 )
 
 // s3API es el subconjunto de *s3.Client que usa el adaptador, para poder
@@ -106,6 +107,12 @@ func newStore(api s3API, cfg Config) *Store {
 		readTimeout:  cfg.ReadTimeout,
 		breaker:      circuitbreaker.New(cfg.Breaker),
 	}
+}
+
+// Healthy indica si el almacén está en condiciones de recibir tráfico: el
+// circuito de S3 no está abierto. Lo usa /health/deps.
+func (s *Store) Healthy() bool {
+	return s.breaker.State() != stateOpen
 }
 
 // Put implementa domain.EvidenceStore.

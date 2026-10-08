@@ -41,6 +41,7 @@ type Config struct {
 	S3GetTimeout                   time.Duration
 	S3BreakerFailureThreshold      int
 	S3BreakerOpenDuration          time.Duration
+	VerdictQueue                   string
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -55,6 +56,7 @@ func Load() (Config, error) {
 		RabbitMQExchange:     os.Getenv("RABBITMQ_EXCHANGE"),
 		S3Region:             os.Getenv("S3_REGION"),
 		EvidenceBucket:       os.Getenv("EVIDENCE_BUCKET"),
+		VerdictQueue:         getEnvDefault("VERDICT_QUEUE", "alert.ia-evidence-validated.q"),
 	}
 
 	required := map[string]string{

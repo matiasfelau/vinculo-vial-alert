@@ -16,6 +16,15 @@ type AlertModel struct {
 	Status         string    `gorm:"type:varchar(32);not null"`
 	RequiresReview bool      `gorm:"column:requires_review;not null;default:false"`
 	CreatedAt      time.Time `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc"`
+
+	// Resultado de la validación de IA. Se guardan para evaluar al modelo
+	// junto con el feedback de los dueños; son nulos hasta que llega el
+	// veredicto (y en las alertas anteriores a US-08).
+	Verdict       *string    `gorm:"type:varchar(8)"`
+	ReasonCodes   *string    `gorm:"column:reason_codes;type:jsonb"`
+	Scores        *string    `gorm:"type:jsonb"`
+	ModelVersions *string    `gorm:"column:model_versions;type:jsonb"`
+	ValidatedAt   *time.Time `gorm:"column:validated_at;type:timestamptz"`
 }
 
 // TableName fija el nombre de tabla explícito.

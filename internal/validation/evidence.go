@@ -97,3 +97,17 @@ func truncate(value string) string {
 	}
 	return strings.ToValidUTF8(value[:maxLen], "?") + "…"
 }
+
+// EvidenceSlotValid indica si (role, index) es una posición que algún tipo de
+// alerta admite: el índice va de 0 a la mayor cantidad de fotos del rol menos
+// uno. Sirve para validar las referencias que llegan en eventos.
+func EvidenceSlotValid(role domain.EvidenceRole, index int) bool {
+	if index < 0 {
+		return false
+	}
+	most := 0
+	for _, roles := range evidenceRules {
+		most = max(most, roles[role].max)
+	}
+	return index < most
+}
