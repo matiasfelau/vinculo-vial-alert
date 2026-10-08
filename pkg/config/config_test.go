@@ -49,3 +49,67 @@ func TestWithStatementTimeout_DSNInvalidoDevuelveError(t *testing.T) {
 		t.Fatal("se esperaba error con un DSN no parseable")
 	}
 }
+
+func setRequiredEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://alert:alert@db:5432/alert?sslmode=disable")
+	t.Setenv("VEHICLE_INTERNAL_URL", "http://vehicle:8081")
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "token")
+	t.Setenv("RABBITMQ_URL", "amqp://guest:guest@rabbit:5672/")
+	t.Setenv("RABBITMQ_EXCHANGE", "vvi.topic.exchange")
+	t.Setenv("RABBITMQ_PREFETCH", "")
+	t.Setenv("MAX_RETRIES", "")
+}
+
+func TestLoad_ConsumoRabbitMQ_Defaults(t *testing.T) {
+	setRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.RabbitMQPrefetch != 10 {
+		t.Errorf("RabbitMQPrefetch = %d, se esperaba 10", cfg.RabbitMQPrefetch)
+	}
+	if cfg.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d, se esperaba 5", cfg.MaxRetries)
+	}
+}
+
+func TestLoad_ConsumoRabbitMQ_ValoresExplicitos(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("RABBITMQ_PREFETCH", "50")
+	t.Setenv("MAX_RETRIES", "0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.RabbitMQPrefetch != 50 {
+		t.Errorf("RabbitMQPrefetch = %d, se esperaba 50", cfg.RabbitMQPrefetch)
+	}
+	if cfg.MaxRetries != 0 {
+		t.Errorf("MaxRetries = %d, se esperaba 0", cfg.MaxRetries)
+	}
+}
+
+func TestLoad_ConsumoRabbitMQ_ValoresInvalidosAbortanElArranque(t *testing.T) {
+	casos := map[string][2]string{
+		"prefetch no numérico":   {"RABBITMQ_PREFETCH", "diez"},
+		"prefetch cero":          {"RABBITMQ_PREFETCH", "0"},
+		"prefetch negativo":      {"RABBITMQ_PREFETCH", "-1"},
+		"reintentos no numérico": {"MAX_RETRIES", "muchos"},
+		"reintentos negativos":   {"MAX_RETRIES", "-1"},
+	}
+
+	for nombre, caso := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv(caso[0], caso[1])
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() debía devolver un error con %s=%s", caso[0], caso[1])
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
-// Package events implementa la publicación de eventos de dominio hacia
-// RabbitMQ. La topología (exchange, colas, retry, DLQ) la declara
-// vinculo-vial-core; este servicio únicamente publica.
+// Package events implementa la publicación y el consumo de eventos de
+// dominio sobre RabbitMQ. La topología (exchanges, colas, retry, DLQ) la
+// declara solo vinculo-vial-core; este servicio publica y consume sobre
+// topología existente.
 package events
 
 import (
