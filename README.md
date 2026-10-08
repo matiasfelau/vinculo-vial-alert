@@ -1,13 +1,14 @@
 # vinculo-vial-alert
 
-Servicio de alertas del sistema Vínculo Vial. Recibe el escaneo de una
-patente cifrada, resuelve los dueños del vehículo a través de
-`vinculo-vial-vehicle` sin descifrar la patente, persiste un historial
-anónimo del emisor y expone el buzón de alertas de cada dueño. El evento
-`alert.created` se persiste en la misma transacción que la alerta
-(patrón transactional outbox) y un worker en background lo publica en
-RabbitMQ: la creación de la alerta no depende de que el broker esté
-disponible en ese momento.
+Servicio de alertas del sistema Vínculo Vial. Crear una alerta es un flujo
+en dos llamadas: `POST /api/v1/alerts/attempts` resuelve los dueños del
+vehículo a través de `vinculo-vial-vehicle` sin descifrar la patente y
+guarda un intento con TTL; `POST /api/v1/alerts` (multipart) consume ese
+intento, sube las fotos cifradas a AWS S3 sin poder leerlas y registra la
+alerta en `PENDING_VALIDATION`. El evento `alert.evidence.uploaded` se
+persiste en la misma transacción que la alerta (patrón transactional
+outbox) y un worker en background lo publica en RabbitMQ: la creación de
+la alerta no depende de que el broker esté disponible en ese momento.
 
 ## Requisitos
 
@@ -74,14 +75,16 @@ El servicio sigue Clean Architecture:
 ```
 /cmd/api                   punto de entrada
 /internal/domain           entidades e interfaces del dominio
-/internal/service/alert    caso de uso de creación de alertas
+/internal/service/attempt  caso de uso del intento de alerta
+/internal/service/alert    caso de uso de creación de alertas con evidencia
 /internal/service/inbox    caso de uso de lectura del buzón de alertas
 /internal/service/outbox   worker de publicación en background (transactional outbox)
 /internal/circuitbreaker   circuit breaker genérico para llamadas salientes
 /internal/repository       persistencia (GORM/PostgreSQL)
 /internal/delivery/http    handlers HTTP (Gin)
-/internal/delivery/events  conexión y publicación de eventos (RabbitMQ)
+/internal/delivery/events  publicación y consumo de eventos (RabbitMQ)
 /internal/client/vehicle   cliente hacia el endpoint interno de Vehicle
+/internal/client/storage   cliente de la evidencia sobre AWS S3
 /internal/validation       validación de entrada
 /pkg/config                configuración por variables de entorno
 ```

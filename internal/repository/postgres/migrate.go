@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	alertsTable         = "alerts"
 	outboxTable         = "outbox_events"
 	outboxBackfillBatch = 500
 )
@@ -29,14 +30,40 @@ var newOutboxColumns = []struct{ name, sqlType string }{
 var legacyOutboxColumns = []string{"issuer_id", "alert_type", "owner_ids"}
 
 // AutoMigrate crea o actualiza el esquema de las tablas alerts,
-// alert_destinations, outbox_events, alert_attempts e issuer_restrictions. Antes de eso convierte el outbox del
+// alert_destinations, alert_evidence, outbox_events, alert_attempts e
+// issuer_restrictions. Antes de eso convierte el outbox del
 // esquema viejo al genérico (ver migrateLegacyOutbox). AlertModel se migra
 // primero: AlertDestinationModel depende de su FK.
 func AutoMigrate(db *gorm.DB) error {
 	if err := migrateLegacyOutbox(db); err != nil {
 		return fmt.Errorf("migración del outbox genérico: %w", err)
 	}
-	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{})
+	if err := migrateAlertStatus(db); err != nil {
+		return fmt.Errorf("migración del estado de las alertas: %w", err)
+	}
+	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &AlertEvidenceModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{})
+}
+
+// migrateAlertStatus agrega alerts.status a una tabla que todavía no lo
+// tiene, dejando todas las alertas existentes en ACTIVE: eran visibles para
+// sus destinatarios antes de que existiera la validación. Una única sentencia
+// con DEFAULT ACTIVE agrega la columna NOT NULL y rellena las filas existentes
+// de forma atómica, algo que AutoMigrate no puede hacer solo (rechazaría una
+// columna NOT NULL sin default en una tabla con filas). El db.AutoMigrate que
+// sigue quita el default, porque el modelo no declara ninguno: toda alerta
+// nueva debe fijar su estado de forma explícita. Si la tabla no existe o ya
+// tiene la columna, no hace nada.
+func migrateAlertStatus(db *gorm.DB) error {
+	migrator := db.Migrator()
+	if !migrator.HasTable(alertsTable) || migrator.HasColumn(alertsTable, "status") {
+		return nil
+	}
+
+	ddl := "ALTER TABLE " + alertsTable + " ADD COLUMN status varchar(32) NOT NULL DEFAULT '" + string(domain.AlertStatusActive) + "'"
+	if err := db.Exec(ddl).Error; err != nil {
+		return fmt.Errorf("agregar la columna status: %w", err)
+	}
+	return nil
 }
 
 // migrateLegacyOutbox convierte outbox_events del esquema viejo

@@ -15,6 +15,12 @@ const (
 	codeIssuerUnderReview      = "ISSUER_UNDER_REVIEW"
 	codeUpstreamBadGateway     = "UPSTREAM_BAD_GATEWAY"
 	codeDependencyUnavailable  = "DEPENDENCY_UNAVAILABLE"
+	codeInvalidEvidence        = "INVALID_EVIDENCE"
+	codeAlertTypeDisabled      = "ALERT_TYPE_DISABLED"
+	codeInvalidAlertType       = "INVALID_ALERT_TYPE"
+	codeEvidenceTooLarge       = "EVIDENCE_TOO_LARGE"
+	codeAttemptNotFound        = "ATTEMPT_NOT_FOUND"
+	codeAttemptExpired         = "ATTEMPT_EXPIRED"
 )
 
 const headerRetryAfter = "Retry-After"

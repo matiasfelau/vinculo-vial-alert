@@ -27,4 +27,8 @@ type Attempt struct {
 type AttemptRepository interface {
 	// Upsert guarda el intento reemplazando el del mismo emisor, si existe.
 	Upsert(ctx context.Context, attempt *Attempt) error
+	// Get devuelve el intento por id y emisor. Un intento inexistente o de otro
+	// usuario devuelve ErrAttemptNotFound, sin distinguir. No filtra por
+	// vencimiento: eso lo decide el llamador.
+	Get(ctx context.Context, id, issuerID uuid.UUID) (*Attempt, error)
 }

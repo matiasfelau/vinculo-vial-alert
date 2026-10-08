@@ -1,8 +1,6 @@
 package http
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,61 +13,12 @@ import (
 	"github.com/google/uuid"
 
 	"vinculo-vial-alert/internal/domain"
-	"vinculo-vial-alert/internal/service/alert"
-	"vinculo-vial-alert/internal/service/attempt"
-	"vinculo-vial-alert/internal/service/inbox"
 )
 
-type mockRestrictions struct {
-	underReview bool
-	err         error
-}
-
-func (m *mockRestrictions) IsUnderReview(context.Context, uuid.UUID) (bool, error) {
-	return m.underReview, m.err
-}
-
-type mockAttempts struct {
-	saved *domain.Attempt
-	err   error
-}
-
-func (m *mockAttempts) Upsert(_ context.Context, a *domain.Attempt) error {
-	if m.err != nil {
-		return m.err
-	}
-	copied := *a
-	m.saved = &copied
-	return nil
-}
-
-// resolverDePrueba devuelve lo configurado y registra el alert_id recibido.
-type resolverDePrueba struct {
-	resolved domain.ResolvedOwners
-	err      error
-	called   bool
-	alertID  uuid.UUID
-}
-
-func (m *resolverDePrueba) ResolveOwners(_ context.Context, _ string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
-	m.called = true
-	m.alertID = alertID
-	return m.resolved, m.err
-}
-
-const retryAfterDePrueba = 7 * time.Second
-
 func routerDeAttempts(restrictions *mockRestrictions, resolver *resolverDePrueba, attempts *mockAttempts) *gin.Engine {
-	gin.SetMode(gin.TestMode)
-	attemptService := attempt.NewCreateAttemptService(restrictions, resolver, attempts, 10*time.Minute)
-	return NewRouter(
-		NewAlertHandler(alert.NewCreateAlertService(&mockRepo{}, resolver)),
-		NewAttemptHandler(attemptService, retryAfterDePrueba),
-		NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{})),
-		NewHealthHandler(),
-		NewReadyHandler(&mockDBPinger{}),
-		NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true}),
-	)
+	deps := nuevasDeps()
+	deps.restrictions, deps.resolver, deps.attempts = restrictions, resolver, attempts
+	return deps.router()
 }
 
 func postAttempt(router *gin.Engine, userID string, body string) *httptest.ResponseRecorder {
@@ -235,7 +184,7 @@ func TestCreateAttempt_BaseDeDatosCaida_Devuelve503ConRetryAfter(t *testing.T) {
 	}
 
 	t.Run("al guardar el intento", func(t *testing.T) {
-		router := routerDeAttempts(&mockRestrictions{}, resolverConDuenos(), &mockAttempts{err: domain.ErrDatabaseUnavailable})
+		router := routerDeAttempts(&mockRestrictions{}, resolverConDuenos(), &mockAttempts{upsertEr: domain.ErrDatabaseUnavailable})
 
 		rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
 
@@ -292,7 +241,7 @@ func TestCreateAttempt_BodyInvalido_Devuelve400SinLlamarAVehicle(t *testing.T) {
 }
 
 func TestCreateAttempt_ErrorInterno_Devuelve500SinDetalles(t *testing.T) {
-	router := routerDeAttempts(&mockRestrictions{}, resolverConDuenos(), &mockAttempts{err: errors.New("violación de constraint en alert_attempts")})
+	router := routerDeAttempts(&mockRestrictions{}, resolverConDuenos(), &mockAttempts{upsertEr: errors.New("violación de constraint en alert_attempts")})
 
 	rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
 
@@ -301,22 +250,5 @@ func TestCreateAttempt_ErrorInterno_Devuelve500SinDetalles(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "constraint") {
 		t.Errorf("la respuesta expone detalles internos: %s", rec.Body.String())
-	}
-}
-
-func TestCreateAttempt_ElBodyDeUnaRutaNoUsaElBodyDelAlertAnterior(t *testing.T) {
-	// El POST /alerts con JSON sigue vivo hasta feature/us08-evidence-ingest:
-	// registrar la ruta de attempts no debe alterarlo.
-	router := routerDeAttempts(&mockRestrictions{}, resolverConDuenos(), &mockAttempts{})
-
-	payload, _ := json.Marshal(map[string]string{"alert_type": "CRASHED", "pat_enc": "x"})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(headerUserID, uuid.New().String())
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, se esperaba 202 del flujo previo", rec.Code)
 	}
 }

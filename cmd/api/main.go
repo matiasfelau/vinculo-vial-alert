@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"vinculo-vial-alert/internal/circuitbreaker"
+	"vinculo-vial-alert/internal/client/storage"
 	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
@@ -88,10 +89,26 @@ func main() {
 		outboxWorker.Run(workerCtx, cfg.OutboxWorkerInterval)
 	}()
 
-	service := alertsvc.NewCreateAlertService(repo, vehicleResolver)
+	storeCtx, cancelStoreInit := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	evidenceStore, err := storage.New(storeCtx, storage.Config{
+		Region:       cfg.S3Region,
+		Bucket:       cfg.EvidenceBucket,
+		WriteTimeout: cfg.S3PutTimeout,
+		ReadTimeout:  cfg.S3GetTimeout,
+		Breaker: circuitbreaker.Config{
+			FailureThreshold: cfg.S3BreakerFailureThreshold,
+			OpenDuration:     cfg.S3BreakerOpenDuration,
+		},
+	})
+	cancelStoreInit()
+	if err != nil {
+		log.Fatalf("error al preparar el almacén de evidencia: %v", err)
+	}
+
+	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout)
 	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, vehicleResolver, attemptRepo, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
-	alertHandler := deliveryhttp.NewAlertHandler(service)
+	alertHandler := deliveryhttp.NewAlertHandler(service, cfg.EvidenceMaxPartBytes, cfg.RetryAfter)
 	attemptHandler := deliveryhttp.NewAttemptHandler(attemptService, cfg.RetryAfter)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
 	healthHandler := deliveryhttp.NewHealthHandler()

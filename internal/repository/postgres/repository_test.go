@@ -65,6 +65,95 @@ func columnasDe(t *testing.T, db *gorm.DB, tabla string) []string {
 	return columnas
 }
 
+func contar(t *testing.T, db *gorm.DB, tabla, donde string, args ...any) int64 {
+	t.Helper()
+
+	var total int64
+	if err := db.Table(tabla).Where(donde, args...).Count(&total).Error; err != nil {
+		t.Fatalf("no se pudo contar %s: %v", tabla, err)
+	}
+	return total
+}
+
+// escenario prepara un intento vigente en la base y los datos para crear la
+// alerta a partir de él.
+type escenario struct {
+	db       *gorm.DB
+	repo     *AlertRepository
+	now      time.Time
+	attempt  *domain.Attempt
+	alert    *domain.AlertHistory
+	owners   []uuid.UUID
+	evidence []domain.Evidence
+	event    domain.OutboxEvent
+}
+
+func nuevoEscenario(t *testing.T) *escenario {
+	t.Helper()
+
+	db := nuevaDBDePrueba(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	issuerID := uuid.New()
+	owners := []uuid.UUID{uuid.New(), uuid.New()}
+	attempt := &domain.Attempt{
+		ID:        uuid.New(),
+		IssuerID:  issuerID,
+		OwnerIDs:  owners,
+		PatEncIA:  "Y3JpcHRvZ3JhbWE=",
+		ExpiresAt: now.Add(10 * time.Minute),
+		CreatedAt: now,
+	}
+	if err := NewAttemptRepository(db).Upsert(context.Background(), attempt); err != nil {
+		t.Fatalf("no se pudo preparar el intento: %v", err)
+	}
+
+	alert := &domain.AlertHistory{
+		ID:        attempt.ID,
+		IssuerID:  issuerID,
+		AlertType: domain.AlertTypeCrashed,
+		Status:    domain.AlertStatusPendingValidation,
+		CreatedAt: now,
+	}
+	evidence := []domain.Evidence{
+		{ID: uuid.New(), AlertID: alert.ID, Kind: domain.EvidenceKindOriginal, Role: domain.EvidenceRoleGeneral, Index: 0,
+			S3Key: domain.OriginalEvidenceKey(alert.ID, domain.EvidenceRoleGeneral, 0), SHA256: strings.Repeat("a", 64), CreatedAt: now},
+		{ID: uuid.New(), AlertID: alert.ID, Kind: domain.EvidenceKindOriginal, Role: domain.EvidenceRoleDetail, Index: 1,
+			S3Key: domain.OriginalEvidenceKey(alert.ID, domain.EvidenceRoleDetail, 1), SHA256: strings.Repeat("b", 64), CreatedAt: now},
+	}
+	event, err := domain.NewEvidenceUploadedEvent(uuid.New(), domain.EvidenceUploadedPayload{
+		AlertID: alert.ID, AlertType: alert.AlertType, PatEncIA: attempt.PatEncIA, Bucket: "bucket",
+		Evidence: []domain.EvidenceRef{{Role: domain.EvidenceRoleGeneral, Index: 0, Key: evidence[0].S3Key, SHA256: evidence[0].SHA256}},
+	}, now)
+	if err != nil {
+		t.Fatalf("no se pudo construir el evento: %v", err)
+	}
+
+	return &escenario{db: db, repo: NewAlertRepository(db), now: now, attempt: attempt, alert: alert, owners: owners, evidence: evidence, event: event}
+}
+
+func (e *escenario) crear() error {
+	return e.repo.CreatePending(context.Background(), e.now, e.alert, e.owners, e.evidence, e.event)
+}
+
+// verificarSinRastros comprueba que la transacción no dejó nada y que el
+// intento sigue disponible para reintentar.
+func (e *escenario) verificarSinRastros(t *testing.T) {
+	t.Helper()
+
+	if contar(t, e.db, "alerts", "id = ?", e.alert.ID) != 0 {
+		t.Error("la alerta no debía quedar persistida")
+	}
+	if contar(t, e.db, "alert_destinations", "alert_id = ?", e.alert.ID) != 0 {
+		t.Error("no debía quedar ningún destinatario")
+	}
+	if contar(t, e.db, "alert_evidence", "alert_id = ?", e.alert.ID) != 0 {
+		t.Error("no debía quedar ninguna fila de evidencia")
+	}
+	if contar(t, e.db, "outbox_events", "id = ?", e.event.ID) != 0 {
+		t.Error("no debía quedar el evento de outbox")
+	}
+}
+
 func TestAlertModel_NoExponeCamposSensibles(t *testing.T) {
 	campos := reflect.VisibleFields(reflect.TypeOf(AlertModel{}))
 
@@ -79,95 +168,222 @@ func TestAlertModel_NoExponeCamposSensibles(t *testing.T) {
 	}
 }
 
-func TestAlertRepository_Create_RespetaContextoYaVencidoDelLlamador(t *testing.T) {
+func TestAlertRepository_CreatePending_RespetaContextoYaCanceladoDelLlamador(t *testing.T) {
 	// El timeout interno de queryTimeout no debe enmascarar un contexto que
-	// el llamador ya canceló: context.WithTimeout sobre un padre vencido
-	// hereda esa cancelación de inmediato.
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
-
+	// el llamador ya canceló.
+	e := nuevoEscenario(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
-
-	if err := repo.Create(ctx, alert, nil, nil); err == nil {
+	if err := e.repo.CreatePending(ctx, e.now, e.alert, e.owners, e.evidence, e.event); err == nil {
 		t.Fatal("se esperaba error al persistir con un contexto ya cancelado")
 	}
 }
 
-func TestAlertRepository_Create_DeadlineVencido_ClasificaComoErrDatabaseUnavailable(t *testing.T) {
-	// A diferencia de un contexto cancelado (context.Canceled), un deadline
-	// vencido (context.DeadlineExceeded) sí debe clasificarse como
-	// ErrDatabaseUnavailable según la sección Postgres del contrato de
-	// resiliencia, para que el handler lo mapee a 503.
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
-
+func TestAlertRepository_CreatePending_DeadlineVencido_ClasificaComoErrDatabaseUnavailable(t *testing.T) {
+	e := nuevoEscenario(t)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
 	defer cancel()
 
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
+	err := e.repo.CreatePending(ctx, e.now, e.alert, e.owners, e.evidence, e.event)
 
-	err := repo.Create(ctx, alert, nil, nil)
 	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrDatabaseUnavailable", err)
 	}
 }
 
-func TestAlertRepository_Create_PersisteSoloIssuerIDYAlertType(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
+func TestAlertRepository_CreatePending_PersisteLaAlertaEnPendingValidation(t *testing.T) {
+	e := nuevoEscenario(t)
 
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC().Truncate(time.Second),
-	}
-
-	if err := repo.Create(context.Background(), alert, nil, nil); err != nil {
-		t.Fatalf("Create devolvió error inesperado: %v", err)
+	if err := e.crear(); err != nil {
+		t.Fatalf("error inesperado: %v", err)
 	}
 
 	var issuerID uuid.UUID
-	var alertType, createdAt string
-	row := db.Table("alerts").
-		Select("issuer_id", "alert_type", "created_at").
-		Where("id = ?", alert.ID).Row()
-	if err := row.Scan(&issuerID, &alertType, &createdAt); err != nil {
-		t.Fatalf("no se pudo leer el registro persistido: %v", err)
+	var alertType, status string
+	var requiresReview bool
+	row := e.db.Table("alerts").
+		Select("issuer_id", "alert_type", "status", "requires_review").
+		Where("id = ?", e.alert.ID).Row()
+	if err := row.Scan(&issuerID, &alertType, &status, &requiresReview); err != nil {
+		t.Fatalf("no se pudo leer la alerta persistida: %v", err)
+	}
+	if issuerID != e.alert.IssuerID || alertType != string(domain.AlertTypeCrashed) {
+		t.Errorf("issuer_id/alert_type = %v/%v", issuerID, alertType)
+	}
+	if status != "PENDING_VALIDATION" || requiresReview {
+		t.Errorf("status = %q, requires_review = %v; se esperaba PENDING_VALIDATION y false", status, requiresReview)
 	}
 
-	if issuerID != alert.IssuerID {
-		t.Errorf("issuer_id persistido = %v, se esperaba %v", issuerID, alert.IssuerID)
+	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at"}
+	if got := columnasDe(t, e.db, "alerts"); !reflect.DeepEqual(got, esperadas) {
+		t.Errorf("columnas de alerts = %v, se esperaban %v (la tabla no debe persistir pat_enc ni owner_ids)", got, esperadas)
 	}
-	if alertType != string(alert.AlertType) {
-		t.Errorf("alert_type persistido = %v, se esperaba %v", alertType, alert.AlertType)
-	}
-	if createdAt == "" {
-		t.Error("created_at persistido está vacío")
+}
+
+func TestAlertRepository_CreatePending_ConsumeElIntentoEnLaMismaTransaccion(t *testing.T) {
+	e := nuevoEscenario(t)
+
+	if err := e.crear(); err != nil {
+		t.Fatalf("error inesperado: %v", err)
 	}
 
-	columnas := columnasDe(t, db, "alerts")
-	esperadas := map[string]bool{"id": true, "issuer_id": true, "alert_type": true, "created_at": true}
-	if len(columnas) != len(esperadas) {
-		t.Fatalf("columnas de alerts = %v, se esperaban exactamente %v", columnas, esperadas)
+	if contar(t, e.db, "alert_attempts", "id = ?", e.attempt.ID) != 0 {
+		t.Error("el intento debía borrarse al crear la alerta")
 	}
-	for _, c := range columnas {
-		if !esperadas[c] {
-			t.Errorf("columna inesperada en alerts: %s (la tabla no debe persistir pat_enc ni owner_ids)", c)
+}
+
+func TestAlertRepository_CreatePending_PersisteDestinatariosEvidenciaYOutbox(t *testing.T) {
+	e := nuevoEscenario(t)
+
+	if err := e.crear(); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	var owners []uuid.UUID
+	if err := e.db.Table("alert_destinations").Where("alert_id = ?", e.alert.ID).Pluck("owner_id", &owners).Error; err != nil {
+		t.Fatalf("no se pudieron leer los destinatarios: %v", err)
+	}
+	if len(owners) != 2 {
+		t.Errorf("destinatarios = %v, se esperaban %v", owners, e.owners)
+	}
+
+	filas, err := e.db.Raw("SELECT kind, role, idx, s3_key, sha256 FROM alert_evidence WHERE alert_id = ? ORDER BY idx", e.alert.ID).Rows()
+	if err != nil {
+		t.Fatalf("no se pudo leer la evidencia: %v", err)
+	}
+	defer filas.Close()
+	var leidas []domain.Evidence
+	for filas.Next() {
+		var item domain.Evidence
+		var kind, role string
+		if err := filas.Scan(&kind, &role, &item.Index, &item.S3Key, &item.SHA256); err != nil {
+			t.Fatalf("error al leer la fila: %v", err)
 		}
+		item.Kind, item.Role = domain.EvidenceKind(kind), domain.EvidenceRole(role)
+		leidas = append(leidas, item)
+	}
+	if len(leidas) != 2 {
+		t.Fatalf("filas de evidencia = %d, se esperaban 2", len(leidas))
+	}
+	if leidas[0].Kind != domain.EvidenceKindOriginal || leidas[0].Role != domain.EvidenceRoleGeneral || leidas[0].S3Key != e.evidence[0].S3Key || leidas[0].SHA256 != e.evidence[0].SHA256 {
+		t.Errorf("evidencia[0] = %+v", leidas[0])
+	}
+	if leidas[1].Role != domain.EvidenceRoleDetail || leidas[1].Index != 1 {
+		t.Errorf("evidencia[1] = %+v", leidas[1])
+	}
+
+	var eventType, status, payload string
+	var actor *uuid.UUID
+	row := e.db.Table("outbox_events").Select("event_type", "actor", "status", "payload").Where("id = ?", e.event.ID).Row()
+	if err := row.Scan(&eventType, &actor, &status, &payload); err != nil {
+		t.Fatalf("no se pudo leer el evento de outbox: %v", err)
+	}
+	if eventType != "alert.evidence.uploaded" || status != outboxStatusPending {
+		t.Errorf("event_type/status = %q/%q", eventType, status)
+	}
+	if actor != nil {
+		t.Errorf("actor = %v, se esperaba NULL: el evento va a IA", actor)
+	}
+	if !json.Valid([]byte(payload)) {
+		t.Errorf("payload no es JSON válido: %s", payload)
+	}
+}
+
+func TestAlertRepository_CreatePending_IntentoVencidoInexistenteOAjeno_DevuelveErrAttemptExpiredSinPersistirNada(t *testing.T) {
+	casos := map[string]func(*escenario){
+		"vencido": func(e *escenario) { e.now = e.attempt.ExpiresAt },
+		"inexistente": func(e *escenario) {
+			if err := e.db.Exec("DELETE FROM alert_attempts").Error; err != nil {
+				t.Fatalf("no se pudo borrar el intento: %v", err)
+			}
+		},
+		"de otro emisor": func(e *escenario) { e.alert.IssuerID = uuid.New() },
+	}
+	for nombre, preparar := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			e := nuevoEscenario(t)
+			preparar(e)
+
+			err := e.crear()
+
+			if !errors.Is(err, domain.ErrAttemptExpired) {
+				t.Fatalf("error = %v, se esperaba ErrAttemptExpired", err)
+			}
+			e.verificarSinRastros(t)
+		})
+	}
+}
+
+func TestAlertRepository_CreatePending_DosSolicitudesConElMismoIntento_SoloUnaGana(t *testing.T) {
+	e := nuevoEscenario(t)
+
+	primera := e.crear()
+	// La segunda usa otro id de evidencia y de evento, como una solicitud real.
+	e.evidence = []domain.Evidence{{ID: uuid.New(), AlertID: e.alert.ID, Kind: domain.EvidenceKindOriginal, Role: domain.EvidenceRoleGeneral,
+		S3Key: e.evidence[0].S3Key, SHA256: strings.Repeat("c", 64), CreatedAt: e.now}}
+	e.event.ID = uuid.New()
+	segunda := e.crear()
+
+	if primera != nil {
+		t.Fatalf("la primera debía ganar: %v", primera)
+	}
+	if !errors.Is(segunda, domain.ErrAttemptExpired) {
+		t.Fatalf("la segunda: error = %v, se esperaba ErrAttemptExpired (410)", segunda)
+	}
+	if contar(t, e.db, "alerts", "id = ?", e.alert.ID) != 1 || contar(t, e.db, "outbox_events", "1 = 1") != 1 {
+		t.Error("debía quedar una única alerta y un único evento")
+	}
+}
+
+func TestAlertRepository_CreatePending_RollbackCompletoSiFallaCualquierInsert(t *testing.T) {
+	casos := map[string]func(*escenario){
+		"evento de outbox duplicado": func(e *escenario) {
+			err := e.db.Create(&OutboxEventModel{ID: e.event.ID, EventType: "x", Payload: "{}", Status: outboxStatusPending, CreatedAt: e.now}).Error
+			if err != nil {
+				t.Fatalf("no se pudo preparar la fila en conflicto: %v", err)
+			}
+		},
+		"destinatario repetido": func(e *escenario) { e.owners = []uuid.UUID{e.owners[0], e.owners[0]} },
+		"clave de evidencia repetida": func(e *escenario) {
+			e.evidence[1].S3Key = e.evidence[0].S3Key
+		},
+	}
+	for nombre, preparar := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			e := nuevoEscenario(t)
+			preparar(e)
+
+			if err := e.crear(); err == nil {
+				t.Fatal("se esperaba un error por violación de constraint")
+			}
+
+			if e.alert != nil && contar(t, e.db, "alerts", "id = ?", e.alert.ID) != 0 {
+				t.Error("la alerta no debía quedar persistida: el fallo debe revertir toda la transacción")
+			}
+			if contar(t, e.db, "alert_destinations", "alert_id = ?", e.alert.ID) != 0 || contar(t, e.db, "alert_evidence", "alert_id = ?", e.alert.ID) != 0 {
+				t.Error("no debía quedar nada persistido tras el rollback")
+			}
+			if contar(t, e.db, "alert_attempts", "id = ?", e.attempt.ID) != 1 {
+				t.Error("el intento no debía consumirse si la transacción falló: el emisor puede reintentar")
+			}
+		})
+	}
+}
+
+func TestAlertRepository_Exists(t *testing.T) {
+	e := nuevoEscenario(t)
+
+	antes, err := e.repo.Exists(context.Background(), e.alert.ID)
+	if err != nil || antes {
+		t.Fatalf("antes de crear: existe = %v, err = %v", antes, err)
+	}
+	if err := e.crear(); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	despues, err := e.repo.Exists(context.Background(), e.alert.ID)
+	if err != nil || !despues {
+		t.Fatalf("después de crear: existe = %v, err = %v", despues, err)
 	}
 }
 
@@ -178,7 +394,7 @@ func TestAlertDestinationModel_NoExponeCamposSensibles(t *testing.T) {
 	for _, campo := range campos {
 		if campo.Name == "Alert" {
 			// Asociación de GORM para la FK, no una columna propia; no se
-			// carga salvo Preload explícito, que el código de US-07 nunca usa.
+			// carga salvo Preload explícito.
 			continue
 		}
 		nombre := strings.ToLower(campo.Name)
@@ -194,261 +410,69 @@ func TestAlertDestinationModel_ColumnasExactas(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 
 	columnas := columnasDe(t, db, "alert_destinations")
-	esperadas := map[string]bool{"id": true, "alert_id": true, "owner_id": true}
-	if len(columnas) != len(esperadas) {
-		t.Fatalf("columnas de alert_destinations = %v, se esperaban exactamente %v", columnas, esperadas)
-	}
-	for _, c := range columnas {
-		if !esperadas[c] {
-			t.Errorf("columna inesperada en alert_destinations: %s", c)
-		}
+	esperadas := []string{"id", "alert_id", "owner_id"}
+	if !reflect.DeepEqual(columnas, esperadas) {
+		t.Fatalf("columnas de alert_destinations = %v, se esperaban %v", columnas, esperadas)
 	}
 }
 
-func TestAlertRepository_Create_PersisteDestinatariosEnLaMismaTransaccion(t *testing.T) {
+func TestAlertEvidenceModel_ColumnasExactasYSinBinarios(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
 
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
-	ownerA := uuid.New()
-	ownerB := uuid.New()
-
-	if err := repo.Create(context.Background(), alert, []uuid.UUID{ownerA, ownerB}, nil); err != nil {
-		t.Fatalf("Create devolvió error inesperado: %v", err)
-	}
-
-	var owners []uuid.UUID
-	if err := db.Table("alert_destinations").
-		Where("alert_id = ?", alert.ID).
-		Pluck("owner_id", &owners).Error; err != nil {
-		t.Fatalf("no se pudieron leer los destinatarios persistidos: %v", err)
-	}
-
-	esperados := map[uuid.UUID]bool{ownerA: true, ownerB: true}
-	if len(owners) != len(esperados) {
-		t.Fatalf("destinatarios persistidos = %v, se esperaban %v", owners, esperados)
-	}
-	for _, o := range owners {
-		if !esperados[o] {
-			t.Errorf("destinatario inesperado persistido: %v", o)
-		}
+	columnas := columnasDe(t, db, "alert_evidence")
+	esperadas := []string{"id", "alert_id", "kind", "role", "idx", "s3_key", "sha256", "created_at"}
+	if !reflect.DeepEqual(columnas, esperadas) {
+		t.Fatalf("columnas de alert_evidence = %v, se esperaban %v: la tabla guarda claves, nunca binarios", columnas, esperadas)
 	}
 }
 
-func TestAlertRepository_Create_PersisteElEventoDeOutboxEnLaMismaTransaccion(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
-
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
-	ownerA := uuid.New()
-	ownerB := uuid.New()
-	event, err := domain.NewAlertCreatedEvent(uuid.New(), alert.IssuerID, alert.AlertType, []uuid.UUID{ownerA, ownerB}, alert.CreatedAt)
-	if err != nil {
-		t.Fatalf("no se pudo construir el evento: %v", err)
-	}
-	outboxEvent := &event
-
-	if err := repo.Create(context.Background(), alert, []uuid.UUID{ownerA, ownerB}, outboxEvent); err != nil {
-		t.Fatalf("Create devolvió error inesperado: %v", err)
-	}
-
-	// Proyección explícita sin created_at/sent_at: el driver de SQLite no
-	// reconoce "timestamptz" como columna de fecha y GORM fallaría al
-	// escanearlas directamente a OutboxEventModel.CreatedAt (time.Time) —
-	// el mismo motivo documentado en inboxRow (inbox_repository.go).
-	var actor uuid.UUID
-	var eventType, status, payloadRaw string
-	row := db.Table("outbox_events").
-		Select("actor", "event_type", "status", "payload").
-		Where("id = ?", outboxEvent.ID).Row()
-	if err := row.Scan(&actor, &eventType, &status, &payloadRaw); err != nil {
-		t.Fatalf("no se pudo leer el evento de outbox persistido: %v", err)
-	}
-	if status != outboxStatusPending {
-		t.Errorf("status = %q, se esperaba %q", status, outboxStatusPending)
-	}
-	if actor != alert.IssuerID {
-		t.Errorf("actor = %v, se esperaba %v", actor, alert.IssuerID)
-	}
-	if eventType != domain.EventTypeAlertCreated {
-		t.Errorf("event_type = %v, se esperaba %v", eventType, domain.EventTypeAlertCreated)
-	}
-
-	var payload domain.AlertCreatedPayload
-	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
-		t.Fatalf("payload no es JSON válido: %v", err)
-	}
-	if len(payload.OwnerIDs) != 2 {
-		t.Errorf("owner_ids = %v, se esperaban 2 elementos", payload.OwnerIDs)
-	}
-}
-
-func TestAlertRepository_Create_SinEventoDeOutbox_NoPersisteFilaDeOutbox(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
-
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
-
-	if err := repo.Create(context.Background(), alert, nil, nil); err != nil {
-		t.Fatalf("Create devolvió error inesperado: %v", err)
-	}
-
-	var total int64
-	if err := db.Table("outbox_events").Count(&total).Error; err != nil {
-		t.Fatalf("no se pudo consultar outbox_events: %v", err)
-	}
-	if total != 0 {
-		t.Errorf("no debía persistirse ningún evento de outbox sin outboxEvent, se encontraron %d", total)
-	}
-}
-
-func TestAlertRepository_Create_RollbackCompletoSiFallaElInsertDelOutbox(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
-
-	// Pre-insertar una fila de outbox para forzar una violación de PK cuando
-	// Create intente insertar la suya con el mismo ID.
-	outboxID := uuid.New()
-	if err := db.Create(&OutboxEventModel{
-		ID:        outboxID,
-		EventType: domain.EventTypeAlertCreated,
-		Payload:   "{}",
-		Status:    outboxStatusPending,
-		CreatedAt: time.Now().UTC(),
-	}).Error; err != nil {
-		t.Fatalf("no se pudo preparar la fila de outbox en conflicto: %v", err)
-	}
-
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
-	ownerID := uuid.New()
-	// outboxID colisiona con la fila ya insertada.
-	event, err := domain.NewAlertCreatedEvent(outboxID, alert.IssuerID, alert.AlertType, []uuid.UUID{ownerID}, alert.CreatedAt)
-	if err != nil {
-		t.Fatalf("no se pudo construir el evento: %v", err)
-	}
-	outboxEvent := &event
-
-	err = repo.Create(context.Background(), alert, []uuid.UUID{ownerID}, outboxEvent)
-	if err == nil {
-		t.Fatal("se esperaba error por violación de PK en outbox_events")
-	}
-
-	var alertas int64
-	if err := db.Table("alerts").Where("id = ?", alert.ID).Count(&alertas).Error; err != nil {
-		t.Fatalf("no se pudo consultar alerts: %v", err)
-	}
-	if alertas != 0 {
-		t.Error("la alerta no debía quedar persistida: el fallo al insertar el evento de outbox debe revertir toda la transacción")
-	}
-
-	var destinos int64
-	if err := db.Table("alert_destinations").Where("alert_id = ?", alert.ID).Count(&destinos).Error; err != nil {
-		t.Fatalf("no se pudo consultar alert_destinations: %v", err)
-	}
-	if destinos != 0 {
-		t.Error("no debía quedar ningún destinatario persistido tras el rollback")
-	}
-}
-
-func TestAlertRepository_Create_SinDestinatarios_PersisteSoloLaAlerta(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
-
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
-
-	if err := repo.Create(context.Background(), alert, nil, nil); err != nil {
-		t.Fatalf("Create devolvió error inesperado: %v", err)
-	}
-
-	var destinos int64
-	if err := db.Table("alert_destinations").Where("alert_id = ?", alert.ID).Count(&destinos).Error; err != nil {
-		t.Fatalf("no se pudo consultar alert_destinations: %v", err)
-	}
-	if destinos != 0 {
-		t.Errorf("se esperaban 0 destinatarios, se persistieron %d", destinos)
-	}
-}
-
-func TestAlertRepository_Create_RollbackSiFallaInsertDeDestinos(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewAlertRepository(db)
-
-	alert := &domain.AlertHistory{
-		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
-		AlertType: domain.AlertTypeCrashed,
-		CreatedAt: time.Now().UTC(),
-	}
-	// El mismo owner_id repetido viola el índice único (owner_id, alert_id)
-	// de alert_destinations: fuerza el fallo del segundo INSERT dentro de
-	// la transacción.
-	ownerDuplicado := uuid.New()
-
-	err := repo.Create(context.Background(), alert, []uuid.UUID{ownerDuplicado, ownerDuplicado}, nil)
-	if err == nil {
-		t.Fatal("se esperaba error por violación del índice único de alert_destinations")
-	}
-
-	var alertas int64
-	if err := db.Table("alerts").Where("id = ?", alert.ID).Count(&alertas).Error; err != nil {
-		t.Fatalf("no se pudo consultar alerts: %v", err)
-	}
-	if alertas != 0 {
-		t.Error("la alerta no debía quedar persistida: el fallo al insertar destinos debe revertir toda la transacción")
-	}
-
-	var destinos int64
-	if err := db.Table("alert_destinations").Where("alert_id = ?", alert.ID).Count(&destinos).Error; err != nil {
-		t.Fatalf("no se pudo consultar alert_destinations: %v", err)
-	}
-	if destinos != 0 {
-		t.Error("no debía quedar ningún destinatario persistido tras el rollback")
-	}
-}
-
-func TestAlertDestination_BorradoEnCascadaAlEliminarLaAlerta(t *testing.T) {
-	db := nuevaDBDePrueba(t)
+func insertarAlerta(t *testing.T, db *gorm.DB) AlertModel {
+	t.Helper()
 
 	alert := AlertModel{
 		ID:        uuid.New(),
 		IssuerID:  uuid.New(),
 		AlertType: string(domain.AlertTypeCrashed),
+		Status:    string(domain.AlertStatusActive),
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := db.Create(&alert).Error; err != nil {
 		t.Fatalf("no se pudo crear la alerta de prueba: %v", err)
 	}
+	return alert
+}
 
-	destino := AlertDestinationModel{
-		ID:      uuid.New(),
-		AlertID: alert.ID,
-		OwnerID: uuid.New(),
+func TestAlertEvidence_UnicidadPorSlotYPorClave(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	alert := insertarAlerta(t, db)
+	fila := func(key string) AlertEvidenceModel {
+		return AlertEvidenceModel{ID: uuid.New(), AlertID: alert.ID, Kind: "ORIGINAL", Role: "GENERAL", Idx: 0, S3Key: key, CreatedAt: time.Now().UTC()}
 	}
+
+	if err := db.Create(&[]AlertEvidenceModel{fila("k1")}).Error; err != nil {
+		t.Fatalf("el primer insert falló: %v", err)
+	}
+	if err := db.Create(&[]AlertEvidenceModel{fila("k2")}).Error; err == nil {
+		t.Error("(alert_id, kind, role, idx) debe ser único")
+	}
+
+	otroSlot := fila("k1")
+	otroSlot.Role = "PLATE"
+	if err := db.Create(&[]AlertEvidenceModel{otroSlot}).Error; err == nil {
+		t.Error("s3_key debe ser único")
+	}
+
+	redactada := fila("k3")
+	redactada.Kind = "REDACTED"
+	if err := db.Create(&[]AlertEvidenceModel{redactada}).Error; err != nil {
+		t.Errorf("el mismo slot con otro kind es válido (original y redactada): %v", err)
+	}
+}
+
+func TestAlertDestination_BorradoEnCascadaAlEliminarLaAlerta(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	alert := insertarAlerta(t, db)
+	destino := AlertDestinationModel{ID: uuid.New(), AlertID: alert.ID, OwnerID: uuid.New()}
 	if err := db.Create(&destino).Error; err != nil {
 		t.Fatalf("no se pudo crear el destinatario de prueba: %v", err)
 	}
@@ -457,11 +481,24 @@ func TestAlertDestination_BorradoEnCascadaAlEliminarLaAlerta(t *testing.T) {
 		t.Fatalf("no se pudo eliminar la alerta: %v", err)
 	}
 
-	var restantes int64
-	if err := db.Table("alert_destinations").Where("id = ?", destino.ID).Count(&restantes).Error; err != nil {
-		t.Fatalf("no se pudo consultar alert_destinations: %v", err)
+	if restantes := contar(t, db, "alert_destinations", "id = ?", destino.ID); restantes != 0 {
+		t.Errorf("el destinatario debía eliminarse en cascada, quedaron %d filas", restantes)
 	}
-	if restantes != 0 {
-		t.Errorf("el destinatario debía eliminarse en cascada al borrar la alerta, quedaron %d filas", restantes)
+}
+
+func TestAlertEvidence_BorradoEnCascadaAlEliminarLaAlerta(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+	alert := insertarAlerta(t, db)
+	fila := AlertEvidenceModel{ID: uuid.New(), AlertID: alert.ID, Kind: "ORIGINAL", Role: "GENERAL", S3Key: "k", CreatedAt: time.Now().UTC()}
+	if err := db.Create(&fila).Error; err != nil {
+		t.Fatalf("no se pudo crear la evidencia de prueba: %v", err)
+	}
+
+	if err := db.Delete(&alert).Error; err != nil {
+		t.Fatalf("no se pudo eliminar la alerta: %v", err)
+	}
+
+	if restantes := contar(t, db, "alert_evidence", "id = ?", fila.ID); restantes != 0 {
+		t.Errorf("la evidencia debía eliminarse en cascada, quedaron %d filas", restantes)
 	}
 }

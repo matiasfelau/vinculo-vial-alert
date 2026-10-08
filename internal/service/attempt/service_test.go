@@ -50,6 +50,10 @@ func (m *mockAttempts) Upsert(_ context.Context, a *domain.Attempt) error {
 	return nil
 }
 
+func (m *mockAttempts) Get(context.Context, uuid.UUID, uuid.UUID) (*domain.Attempt, error) {
+	return nil, domain.ErrAttemptNotFound
+}
+
 const patEncIADePrueba = "Y3JpcHRvZ3JhbWE="
 
 var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
