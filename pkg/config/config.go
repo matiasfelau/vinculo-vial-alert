@@ -45,6 +45,7 @@ type Config struct {
 	S3BreakerFailureThreshold      int
 	S3BreakerOpenDuration          time.Duration
 	VerdictQueue                   string
+	UserStatusQueue                string
 	EvidenceRetention              time.Duration
 }
 
@@ -61,6 +62,7 @@ func Load() (Config, error) {
 		S3Region:             os.Getenv("S3_REGION"),
 		EvidenceBucket:       os.Getenv("EVIDENCE_BUCKET"),
 		VerdictQueue:         getEnvDefault("VERDICT_QUEUE", "alert.ia-evidence-validated.q"),
+		UserStatusQueue:      getEnvDefault("USER_STATUS_QUEUE", "alert.user-status-changed.q"),
 	}
 
 	required := map[string]string{
