@@ -24,6 +24,7 @@ import (
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
 	ownersvc "vinculo-vial-alert/internal/service/owner"
 	restrictionsvc "vinculo-vial-alert/internal/service/restriction"
+	sweepersvc "vinculo-vial-alert/internal/service/sweeper"
 	verdictsvc "vinculo-vial-alert/internal/service/verdict"
 	"vinculo-vial-alert/pkg/config"
 )
@@ -108,8 +109,8 @@ func main() {
 		log.Fatalf("error al preparar el almacén de evidencia: %v", err)
 	}
 
-	// Los consumidores corren en background, cada uno con su propia conexión y
-	// reconexión. Se detiene antes que el worker de outbox, para que un
+	// Los consumidores y el sweeper corren en background; los consumidores con
+	// su propia conexión y reconexión. Se detiene antes que el worker de outbox, para que un
 	// veredicto en proceso alcance a dejar su evento en el outbox.
 	verdictService := verdictsvc.NewApplyVerdictService(repopostgres.NewVerdictRepository(db), evidenceStore)
 	verdictStatus := &deliveryevents.ConnectionStatus{}
@@ -136,6 +137,13 @@ func main() {
 				handler := deliveryevents.NewMessageHandler(deliveryevents.NewUserStatusProcessor(userStatusService), deadLetters, cfg.UserStatusQueue, cfg.MaxRetries)
 				return deliveryevents.NewConsumer(channel, cfg.UserStatusQueue, handler)
 			})
+	}()
+
+	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention)
+	sweeperDone := make(chan struct{})
+	go func() {
+		defer close(sweeperDone)
+		sweeper.Run(consumersCtx, cfg.SweeperInterval)
 	}()
 
 	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout)
@@ -196,6 +204,12 @@ func main() {
 	case <-userStatusDone:
 	case <-ctx.Done():
 		log.Println("el consumidor de estados de usuario no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
+	}
+
+	select {
+	case <-sweeperDone:
+	case <-ctx.Done():
+		log.Println("el sweeper no terminó a tiempo; su vuelta se repite al reiniciar")
 	}
 
 	stopWorker()
