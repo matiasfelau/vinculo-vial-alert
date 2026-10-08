@@ -12,28 +12,17 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-// outboxEventToModel serializa los owner_ids como JSON: el outbox no
-// necesita consultarlos relacionalmente, y una columna de texto evita una
-// tabla hija solo para un detalle de implementación interno.
-func outboxEventToModel(event *domain.OutboxEvent) (OutboxEventModel, error) {
-	rawOwnerIDs := make([]string, len(event.OwnerIDs))
-	for i, id := range event.OwnerIDs {
-		rawOwnerIDs[i] = id.String()
-	}
-
-	encoded, err := json.Marshal(rawOwnerIDs)
-	if err != nil {
-		return OutboxEventModel{}, err
-	}
-
+// outboxEventToModel convierte el evento de dominio a su fila de outbox
+// pendiente. El payload ya viene serializado a JSON.
+func outboxEventToModel(event *domain.OutboxEvent) OutboxEventModel {
 	return OutboxEventModel{
 		ID:        event.ID,
-		IssuerID:  event.IssuerID,
-		AlertType: string(event.AlertType),
-		OwnerIDs:  string(encoded),
+		EventType: event.EventType,
+		Actor:     event.Actor,
+		Payload:   string(event.Payload),
 		Status:    outboxStatusPending,
 		CreatedAt: event.CreatedAt,
-	}, nil
+	}
 }
 
 // outboxPendingRow es la proyección de FetchPending. created_at se escanea
@@ -42,28 +31,14 @@ func outboxEventToModel(event *domain.OutboxEvent) (OutboxEventModel, error) {
 // columna de fecha, así que se parsea con parseCreatedAt en vez de dejar
 // que GORM la escanee directamente a OutboxEventModel.CreatedAt.
 type outboxPendingRow struct {
-	ID        uuid.UUID `gorm:"column:id"`
-	IssuerID  uuid.UUID `gorm:"column:issuer_id"`
-	AlertType string    `gorm:"column:alert_type"`
-	OwnerIDs  string    `gorm:"column:owner_ids"`
-	CreatedAt string    `gorm:"column:created_at"`
+	ID        uuid.UUID  `gorm:"column:id"`
+	EventType string     `gorm:"column:event_type"`
+	Actor     *uuid.UUID `gorm:"column:actor"`
+	Payload   string     `gorm:"column:payload"`
+	CreatedAt string     `gorm:"column:created_at"`
 }
 
 func outboxRowToEvent(row outboxPendingRow) (domain.OutboxEvent, error) {
-	var rawOwnerIDs []string
-	if err := json.Unmarshal([]byte(row.OwnerIDs), &rawOwnerIDs); err != nil {
-		return domain.OutboxEvent{}, fmt.Errorf("owner_ids con formato inesperado: %w", err)
-	}
-
-	ownerIDs := make([]uuid.UUID, len(rawOwnerIDs))
-	for i, raw := range rawOwnerIDs {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return domain.OutboxEvent{}, fmt.Errorf("owner_id no parseable: %w", err)
-		}
-		ownerIDs[i] = id
-	}
-
 	createdAt, err := parseCreatedAt(row.CreatedAt)
 	if err != nil {
 		return domain.OutboxEvent{}, fmt.Errorf("created_at con formato inesperado: %w", err)
@@ -71,9 +46,9 @@ func outboxRowToEvent(row outboxPendingRow) (domain.OutboxEvent, error) {
 
 	return domain.OutboxEvent{
 		ID:        row.ID,
-		IssuerID:  row.IssuerID,
-		AlertType: domain.AlertType(row.AlertType),
-		OwnerIDs:  ownerIDs,
+		EventType: row.EventType,
+		Actor:     row.Actor,
+		Payload:   json.RawMessage(row.Payload),
 		CreatedAt: createdAt,
 	}, nil
 }
@@ -99,7 +74,7 @@ func (r *OutboxRepository) FetchPending(ctx context.Context, limit int) ([]domai
 	var rows []outboxPendingRow
 	err := r.db.WithContext(ctx).
 		Table("outbox_events").
-		Select("id, issuer_id, alert_type, owner_ids, created_at").
+		Select("id, event_type, actor, payload, created_at").
 		Where("status = ?", outboxStatusPending).
 		Order("created_at ASC").
 		Limit(limit).

@@ -1,10 +1,149 @@
 package postgres
 
-import "gorm.io/gorm"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	"vinculo-vial-alert/internal/domain"
+)
+
+const (
+	outboxTable         = "outbox_events"
+	outboxBackfillBatch = 500
+)
+
+// newOutboxColumns son las columnas del outbox genérico, agregadas nullable
+// hasta que se convierten las filas viejas.
+var newOutboxColumns = []struct{ name, sqlType string }{
+	{"event_type", "varchar(64)"},
+	{"actor", "uuid"},
+	{"payload", "jsonb"},
+}
+
+// legacyOutboxColumns son las columnas del outbox atado a alert.created
+// (issuer_id, alert_type, owner_ids) que reemplazan event_type, actor y
+// payload.
+var legacyOutboxColumns = []string{"issuer_id", "alert_type", "owner_ids"}
 
 // AutoMigrate crea o actualiza el esquema de las tablas alerts,
-// alert_destinations y outbox_events. AlertModel se migra primero:
-// AlertDestinationModel depende de su FK.
+// alert_destinations y outbox_events. Antes de eso convierte el outbox del
+// esquema viejo al genérico (ver migrateLegacyOutbox). AlertModel se migra
+// primero: AlertDestinationModel depende de su FK.
 func AutoMigrate(db *gorm.DB) error {
+	if err := migrateLegacyOutbox(db); err != nil {
+		return fmt.Errorf("migración del outbox genérico: %w", err)
+	}
 	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &OutboxEventModel{})
+}
+
+// migrateLegacyOutbox convierte outbox_events del esquema viejo
+// (issuer_id, alert_type, owner_ids) al genérico (event_type, actor,
+// payload) en una única transacción, para que una falla a mitad no deje la
+// tabla a medio convertir:
+//  1. agrega las columnas nuevas, todavía nullable;
+//  2. convierte cada fila a event_type = alert.created, actor = issuer_id y
+//     payload = { owner_ids, alert_type };
+//  3. recién después borra las columnas viejas y deja event_type y payload
+//     en NOT NULL.
+//
+// Si la tabla no existe o ya no tiene las columnas viejas, no
+// hace nada, así que es idempotente. Cualquier fila con un formato que no
+// se pueda convertir aborta la migración: no se pierde ningún evento.
+func migrateLegacyOutbox(db *gorm.DB) error {
+	migrator := db.Migrator()
+	if !migrator.HasTable(outboxTable) || !migrator.HasColumn(outboxTable, "issuer_id") {
+		return nil
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, column := range newOutboxColumns {
+			if tx.Migrator().HasColumn(outboxTable, column.name) {
+				continue
+			}
+			if err := tx.Exec("ALTER TABLE " + outboxTable + " ADD COLUMN " + column.name + " " + column.sqlType).Error; err != nil {
+				return fmt.Errorf("agregar la columna %s: %w", column.name, err)
+			}
+		}
+
+		if err := backfillLegacyOutbox(tx); err != nil {
+			return err
+		}
+
+		for _, column := range legacyOutboxColumns {
+			if err := tx.Exec("ALTER TABLE " + outboxTable + " DROP COLUMN " + column).Error; err != nil {
+				return fmt.Errorf("borrar la columna %s: %w", column, err)
+			}
+		}
+
+		// Con todas las filas convertidas, event_type y payload pasan a
+		// NOT NULL. AutoMigrate no lo hace solo: nunca endurece una columna
+		// que ya existe.
+		for _, field := range []string{"EventType", "Payload"} {
+			if err := tx.Migrator().AlterColumn(&OutboxEventModel{}, field); err != nil {
+				return fmt.Errorf("aplicar NOT NULL a %s: %w", field, err)
+			}
+		}
+		return nil
+	})
+}
+
+// legacyOutboxRow es la proyección de las filas del esquema viejo que
+// todavía no se convirtieron.
+type legacyOutboxRow struct {
+	ID        uuid.UUID `gorm:"column:id"`
+	IssuerID  uuid.UUID `gorm:"column:issuer_id"`
+	AlertType string    `gorm:"column:alert_type"`
+	OwnerIDs  string    `gorm:"column:owner_ids"`
+}
+
+// legacyAlertCreatedPayload reproduce el payload de alert.created que
+// armaba el publisher del esquema viejo.
+type legacyAlertCreatedPayload struct {
+	OwnerIDs  json.RawMessage `json:"owner_ids"`
+	AlertType string          `json:"alert_type"`
+}
+
+func backfillLegacyOutbox(tx *gorm.DB) error {
+	for {
+		var rows []legacyOutboxRow
+		err := tx.Table(outboxTable).
+			Select("id, issuer_id, alert_type, owner_ids").
+			Where("event_type IS NULL").
+			Order("id").
+			Limit(outboxBackfillBatch).
+			Scan(&rows).Error
+		if err != nil {
+			return fmt.Errorf("leer las filas del esquema viejo: %w", err)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+
+		for _, row := range rows {
+			if !json.Valid([]byte(row.OwnerIDs)) {
+				return fmt.Errorf("fila %s: owner_ids no es JSON válido", row.ID)
+			}
+			payload, err := json.Marshal(legacyAlertCreatedPayload{
+				OwnerIDs:  json.RawMessage(row.OwnerIDs),
+				AlertType: row.AlertType,
+			})
+			if err != nil {
+				return fmt.Errorf("fila %s: serializar el payload: %w", row.ID, err)
+			}
+
+			err = tx.Table(outboxTable).
+				Where("id = ?", row.ID).
+				Updates(map[string]any{
+					"event_type": domain.EventTypeAlertCreated,
+					"actor":      row.IssuerID,
+					"payload":    string(payload),
+				}).Error
+			if err != nil {
+				return fmt.Errorf("fila %s: convertir al esquema genérico: %w", row.ID, err)
+			}
+		}
+	}
 }

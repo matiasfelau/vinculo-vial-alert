@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -51,10 +50,7 @@ func (r *AlertRepository) Create(ctx context.Context, alert *domain.AlertHistory
 		}
 
 		if outboxEvent != nil {
-			outboxModel, err := outboxEventToModel(outboxEvent)
-			if err != nil {
-				return fmt.Errorf("alert repository: error al serializar el evento de outbox: %w", err)
-			}
+			outboxModel := outboxEventToModel(outboxEvent)
 			if err := tx.Create(&outboxModel).Error; err != nil {
 				return err
 			}
