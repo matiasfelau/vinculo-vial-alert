@@ -13,6 +13,8 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
+const testRetention = 30 * 24 * time.Hour
+
 type mockInboxRepo struct {
 	called  bool
 	ownerID uuid.UUID
@@ -32,7 +34,7 @@ func (m *mockInboxRepo) FindByOwner(ctx context.Context, ownerID uuid.UUID, curs
 
 func TestExecute_SinAlertas_DevuelveItemsVacioYNextCursorNulo(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	page, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New()})
 	if err != nil {
@@ -51,7 +53,7 @@ func TestExecute_SinAlertas_DevuelveItemsVacioYNextCursorNulo(t *testing.T) {
 
 func TestExecute_LimitNoEspecificado_UsaDefault20(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	if _, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New(), Limit: 0}); err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -63,7 +65,7 @@ func TestExecute_LimitNoEspecificado_UsaDefault20(t *testing.T) {
 
 func TestExecute_LimitMayorAlTope_SeRecortaSilenciosamente(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	if _, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New(), Limit: 500}); err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -75,7 +77,7 @@ func TestExecute_LimitMayorAlTope_SeRecortaSilenciosamente(t *testing.T) {
 
 func TestExecute_OwnerIDSePropagaAlRepositorio(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	ownerID := uuid.New()
 	if _, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: ownerID}); err != nil {
@@ -88,7 +90,7 @@ func TestExecute_OwnerIDSePropagaAlRepositorio(t *testing.T) {
 
 func TestExecute_SinCursor_ConsultaPrimeraPagina(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	if _, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New(), Cursor: ""}); err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -100,7 +102,7 @@ func TestExecute_SinCursor_ConsultaPrimeraPagina(t *testing.T) {
 
 func TestExecute_CursorCorrupto_DevuelveErrInvalidCursorSinConsultarElRepositorio(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	_, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New(), Cursor: "!!!corrupto!!!"})
 	if !errors.Is(err, domain.ErrInvalidCursor) {
@@ -114,7 +116,7 @@ func TestExecute_CursorCorrupto_DevuelveErrInvalidCursorSinConsultarElRepositori
 func TestExecute_CursorValido_SeDecodificaYPropagaAlRepositorio(t *testing.T) {
 	original := domain.Cursor{CreatedAt: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC), ID: uuid.New()}
 	repo := &mockInboxRepo{items: []domain.InboxItem{}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	encoded := domain.EncodeCursor(original)
 	if _, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New(), Cursor: encoded}); err != nil {
@@ -132,7 +134,7 @@ func TestExecute_UltimaPagina_NextCursorEsNulo(t *testing.T) {
 	repo := &mockInboxRepo{items: []domain.InboxItem{
 		{ID: uuid.New(), AlertType: domain.AlertTypeCrashed, CreatedAt: time.Now().UTC()},
 	}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	page, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New(), Limit: 20})
 	if err != nil {
@@ -153,7 +155,7 @@ func TestExecute_HayProximaPagina_DescartaLaFilaExtraYConstruyeNextCursorConLaUl
 	extra := domain.InboxItem{ID: uuid.New(), AlertType: domain.AlertTypeParkedOnGarage, CreatedAt: base.Add(-2 * time.Minute)}
 
 	repo := &mockInboxRepo{items: []domain.InboxItem{primera, segunda, extra}}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	page, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New(), Limit: 2})
 	if err != nil {
@@ -182,7 +184,7 @@ func TestExecute_HayProximaPagina_DescartaLaFilaExtraYConstruyeNextCursorConLaUl
 func TestExecute_ErrorDelRepositorio_SePropaga(t *testing.T) {
 	repoErr := errors.New("db caída")
 	repo := &mockInboxRepo{err: repoErr}
-	svc := NewGetInboxService(repo)
+	svc := NewGetInboxService(repo, testRetention)
 
 	_, err := svc.Execute(context.Background(), GetInboxInput{OwnerID: uuid.New()})
 	if !errors.Is(err, repoErr) {

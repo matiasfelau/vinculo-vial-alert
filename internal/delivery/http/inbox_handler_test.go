@@ -34,12 +34,12 @@ func (m *mockInboxRepo) FindByOwner(ctx context.Context, ownerID uuid.UUID, curs
 
 func nuevoRouterInboxDePrueba(repo *mockInboxRepo) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	inboxHandler := NewInboxHandler(inbox.NewGetInboxService(repo))
+	inboxHandler := NewInboxHandler(inbox.NewGetInboxService(repo, testRetention))
 	alertHandler := NewAlertHandler(nil, testMaxPartBytes, retryAfterDePrueba)
 	healthHandler := NewHealthHandler()
 	readyHandler := NewReadyHandler(&mockDBPinger{})
 	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
-	return NewRouter(alertHandler, NewAttemptHandler(nil, 0), inboxHandler, healthHandler, readyHandler, depsHandler)
+	return NewRouter(alertHandler, NewAttemptHandler(nil, 0), NewOwnerHandler(nil, 0), inboxHandler, healthHandler, readyHandler, depsHandler)
 }
 
 func realizarSolicitudInbox(router *gin.Engine, headers map[string]string, rawQuery string) *httptest.ResponseRecorder {

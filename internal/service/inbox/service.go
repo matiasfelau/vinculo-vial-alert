@@ -32,10 +32,26 @@ type GetInboxInput struct {
 // explícito a este struct es el punto donde el contrato de la API queda
 // desacoplado del tipo de dominio, tal como exige la regla de US-07 de no
 // serializar la entidad de dominio directamente.
+//
+// Evidence lista solo las imágenes redactadas que el dueño todavía puede
+// pedir: vacío si IA no pudo redactar o si la retención ya venció.
+// EvidenceExpiresAt es null cuando no hay evidencia. MyFeedback y Reported
+// son los del propio destinatario.
 type InboxItemDTO struct {
-	ID        uuid.UUID        `json:"id"`
-	AlertType domain.AlertType `json:"alert_type"`
-	CreatedAt time.Time        `json:"created_at"`
+	ID                uuid.UUID        `json:"id"`
+	AlertType         domain.AlertType `json:"alert_type"`
+	CreatedAt         time.Time        `json:"created_at"`
+	RequiresReview    bool             `json:"requires_review"`
+	Evidence          []EvidenceDTO    `json:"evidence"`
+	EvidenceExpiresAt *time.Time       `json:"evidence_expires_at"`
+	MyFeedback        *domain.Rating   `json:"my_feedback"`
+	Reported          bool             `json:"reported"`
+}
+
+// EvidenceDTO identifica una imagen redactada disponible para el dueño.
+type EvidenceDTO struct {
+	Role  domain.EvidenceRole `json:"role"`
+	Index int                 `json:"index"`
 }
 
 // InboxPageDTO es la respuesta paginada del inbox. Items nunca es nil:
@@ -47,13 +63,16 @@ type InboxPageDTO struct {
 
 // GetInboxService implementa el caso de uso de lectura del inbox.
 type GetInboxService struct {
-	repo domain.InboxRepository
+	repo      domain.InboxRepository
+	retention time.Duration
+	now       func() time.Time
 }
 
 // NewGetInboxService construye el caso de uso a partir de su dependencia
-// del dominio.
-func NewGetInboxService(repo domain.InboxRepository) *GetInboxService {
-	return &GetInboxService{repo: repo}
+// del dominio. retention es cuánto tiempo, desde validated_at, el dueño puede
+// ver la evidencia redactada (EVIDENCE_RETENTION_DAYS).
+func NewGetInboxService(repo domain.InboxRepository, retention time.Duration) *GetInboxService {
+	return &GetInboxService{repo: repo, retention: retention, now: func() time.Time { return time.Now().UTC() }}
 }
 
 // Execute resuelve una página del inbox. Un cursor no decodificable
@@ -86,9 +105,10 @@ func (s *GetInboxService) Execute(ctx context.Context, input GetInboxInput) (Inb
 		rows = rows[:limit]
 	}
 
+	now := s.now()
 	items := make([]InboxItemDTO, len(rows))
 	for i, row := range rows {
-		items[i] = InboxItemDTO{ID: row.ID, AlertType: row.AlertType, CreatedAt: row.CreatedAt}
+		items[i] = s.toDTO(row, now)
 	}
 
 	page := InboxPageDTO{Items: items}
@@ -99,4 +119,33 @@ func (s *GetInboxService) Execute(ctx context.Context, input GetInboxInput) (Inb
 	}
 
 	return page, nil
+}
+
+// toDTO arma el ítem de salida aplicando la retención: pasado
+// validated_at + retención el dueño ya no puede pedir las imágenes, así que
+// el ítem no las lista ni informa un vencimiento.
+func (s *GetInboxService) toDTO(row domain.InboxItem, now time.Time) InboxItemDTO {
+	dto := InboxItemDTO{
+		ID:             row.ID,
+		AlertType:      row.AlertType,
+		CreatedAt:      row.CreatedAt,
+		RequiresReview: row.RequiresReview,
+		Evidence:       []EvidenceDTO{},
+		MyFeedback:     row.MyFeedback,
+		Reported:       row.Reported,
+	}
+
+	if row.ValidatedAt == nil || len(row.Evidence) == 0 {
+		return dto
+	}
+	expiresAt := row.ValidatedAt.Add(s.retention)
+	if now.After(expiresAt) {
+		return dto
+	}
+
+	for _, evidence := range row.Evidence {
+		dto.Evidence = append(dto.Evidence, EvidenceDTO{Role: evidence.Role, Index: evidence.Index})
+	}
+	dto.EvidenceExpiresAt = &expiresAt
+	return dto
 }
