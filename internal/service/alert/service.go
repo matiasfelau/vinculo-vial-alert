@@ -42,7 +42,7 @@ type CreateAlertResult struct {
 
 // CreateAlertService implementa POST /api/v1/alerts.
 type CreateAlertService struct {
-	restrictions domain.RestrictionRepository
+	restrictions domain.RestrictionChecker
 	attempts     domain.AttemptRepository
 	alerts       domain.AlertRepository
 	store        domain.EvidenceStore
@@ -54,7 +54,7 @@ type CreateAlertService struct {
 // NewCreateAlertService construye el caso de uso. bucket viaja en el evento
 // para que IA sepa dónde leer; putBudget es el presupuesto total de los PUT
 // concurrentes (S3_PUT_TIMEOUT_MS).
-func NewCreateAlertService(restrictions domain.RestrictionRepository, attempts domain.AttemptRepository, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget time.Duration) *CreateAlertService {
+func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts domain.AttemptRepository, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget time.Duration) *CreateAlertService {
 	return &CreateAlertService{
 		restrictions: restrictions,
 		attempts:     attempts,

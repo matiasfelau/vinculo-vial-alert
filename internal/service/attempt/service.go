@@ -23,7 +23,7 @@ type CreateAttemptInput struct {
 
 // CreateAttemptService implementa POST /api/v1/alerts/attempts.
 type CreateAttemptService struct {
-	restrictions domain.RestrictionRepository
+	restrictions domain.RestrictionChecker
 	resolver     domain.OwnerResolver
 	attempts     domain.AttemptRepository
 	ttl          time.Duration
@@ -32,7 +32,7 @@ type CreateAttemptService struct {
 
 // NewCreateAttemptService construye el caso de uso. ttl es la vigencia del
 // intento (ATTEMPT_TTL_SECONDS).
-func NewCreateAttemptService(restrictions domain.RestrictionRepository, resolver domain.OwnerResolver, attempts domain.AttemptRepository, ttl time.Duration) *CreateAttemptService {
+func NewCreateAttemptService(restrictions domain.RestrictionChecker, resolver domain.OwnerResolver, attempts domain.AttemptRepository, ttl time.Duration) *CreateAttemptService {
 	return &CreateAttemptService{
 		restrictions: restrictions,
 		resolver:     resolver,

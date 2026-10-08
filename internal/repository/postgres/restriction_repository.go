@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"vinculo-vial-alert/internal/domain"
 )
@@ -53,4 +54,26 @@ func (r *RestrictionRepository) IsUnderReview(ctx context.Context, userID uuid.U
 		return false, classifyDBError(err)
 	}
 	return total > 0, nil
+}
+
+// Upsert implementa domain.RestrictionRepository con last-write-wins:
+// INSERT ... ON CONFLICT (user_id) DO UPDATE ... WHERE
+// issuer_restrictions.changed_at < EXCLUDED.changed_at. La condición hace de
+// barrera de idempotencia y de orden: un evento repetido o más viejo que el
+// guardado no modifica la fila.
+func (r *RestrictionRepository) Upsert(ctx context.Context, restriction domain.Restriction) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	model := RestrictionModel{
+		UserID:        restriction.UserID,
+		AccountStatus: string(restriction.AccountStatus),
+		ChangedAt:     restriction.ChangedAt.UTC(),
+	}
+	err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"account_status", "changed_at"}),
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "issuer_restrictions.changed_at < EXCLUDED.changed_at"}}},
+	}).Create(&model).Error
+	return classifyDBError(err)
 }

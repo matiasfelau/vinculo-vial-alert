@@ -16,6 +16,7 @@ services:
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@vinculo-vial-rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-vvi.topic.exchange}
       VERDICT_QUEUE: ${VERDICT_QUEUE:-alert.ia-evidence-validated.q}
+      USER_STATUS_QUEUE: ${USER_STATUS_QUEUE:-alert.user-status-changed.q}
       RABBITMQ_PREFETCH: ${RABBITMQ_PREFETCH:-10}
       MAX_RETRIES: ${MAX_RETRIES:-5}
       S3_REGION: ${S3_REGION:?la variable S3_REGION es obligatoria en .env}
