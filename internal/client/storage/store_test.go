@@ -487,3 +487,34 @@ func TestBreaker_UnaCancelacionConElCircuitoCerradoNoCuentaComoFalla(t *testing.
 		t.Errorf("llamadas = %d, se esperaban 10: una cancelación del llamador no debe abrir el circuito", api.callCount())
 	}
 }
+
+func TestHealthy_ReflejaElEstadoDelCircuito(t *testing.T) {
+	api := &fakeS3{err: httpError(http.StatusInternalServerError)}
+	store := nuevoStore(api) // umbral 3
+
+	if !store.Healthy() {
+		t.Fatal("un store recién creado debe reportarse sano")
+	}
+	for i := 0; i < 3; i++ {
+		_ = store.Delete(context.Background(), testKey)
+	}
+	if store.Healthy() {
+		t.Error("con el circuito abierto el store debe reportarse no sano")
+	}
+}
+
+func TestHealthy_UnaPruebaSemiAbiertaYaNoEsCircuitoAbierto(t *testing.T) {
+	api := &fakeS3{err: httpError(http.StatusInternalServerError)}
+	store := storeConAperturaCorta(api)
+
+	_ = store.Delete(context.Background(), testKey) // abre
+	time.Sleep(20 * time.Millisecond)
+	api.mu.Lock()
+	api.err = nil
+	api.mu.Unlock()
+	_ = store.Delete(context.Background(), testKey) // la prueba cierra el circuito
+
+	if !store.Healthy() {
+		t.Error("tras una prueba exitosa el store debe volver a reportarse sano")
+	}
+}

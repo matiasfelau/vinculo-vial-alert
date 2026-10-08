@@ -22,6 +22,7 @@ import (
 	attemptsvc "vinculo-vial-alert/internal/service/attempt"
 	inboxsvc "vinculo-vial-alert/internal/service/inbox"
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
+	verdictsvc "vinculo-vial-alert/internal/service/verdict"
 	"vinculo-vial-alert/pkg/config"
 )
 
@@ -105,6 +106,23 @@ func main() {
 		log.Fatalf("error al preparar el almacén de evidencia: %v", err)
 	}
 
+	// El consumidor de veredictos corre en background con su propia conexión y
+	// reconexión. Se detiene antes que el worker de outbox, para que un
+	// veredicto en proceso alcance a dejar su evento en el outbox.
+	verdictService := verdictsvc.NewApplyVerdictService(repopostgres.NewVerdictRepository(db), evidenceStore)
+	verdictStatus := &deliveryevents.ConnectionStatus{}
+	consumersCtx, stopConsumers := context.WithCancel(context.Background())
+	verdictDone := make(chan struct{})
+	go func() {
+		defer close(verdictDone)
+		deliveryevents.RunWithReconnect(consumersCtx, cfg.RabbitMQURL, cfg.VerdictQueue, cfg.RabbitMQPrefetch, verdictStatus,
+			func(channel deliveryevents.ConsumerChannel) *deliveryevents.Consumer {
+				deadLetters := deliveryevents.NewAMQPDeadLetterPublisher(channel, cfg.RabbitMQPublishTimeout)
+				handler := deliveryevents.NewMessageHandler(deliveryevents.NewVerdictProcessor(verdictService), deadLetters, cfg.VerdictQueue, cfg.MaxRetries)
+				return deliveryevents.NewConsumer(channel, cfg.VerdictQueue, handler)
+			})
+	}()
+
 	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout)
 	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, vehicleResolver, attemptRepo, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo)
@@ -112,7 +130,10 @@ func main() {
 	attemptHandler := deliveryhttp.NewAttemptHandler(attemptService, cfg.RetryAfter)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
 	healthHandler := deliveryhttp.NewHealthHandler()
-	depsHandler := deliveryhttp.NewDepsHandler(rabbitConn, outboxWorker)
+	depsHandler := deliveryhttp.NewDepsHandler(rabbitConn, outboxWorker,
+		deliveryhttp.DependencyCheck{Name: "s3", Healthy: evidenceStore.Healthy},
+		deliveryhttp.DependencyCheck{Name: "verdict_consumer", Healthy: verdictStatus.Connected},
+	)
 	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
 	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
 
@@ -145,6 +166,13 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("error durante el drenado de requests: %v", err)
+	}
+
+	stopConsumers()
+	select {
+	case <-verdictDone:
+	case <-ctx.Done():
+		log.Println("el consumidor de veredictos no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
 	}
 
 	stopWorker()

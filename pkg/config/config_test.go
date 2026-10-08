@@ -62,6 +62,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("MAX_RETRIES", "")
 	t.Setenv("ATTEMPT_TTL_SECONDS", "")
 	t.Setenv("RETRY_AFTER_SECONDS", "")
+	t.Setenv("VERDICT_QUEUE", "")
 	t.Setenv("S3_REGION", "us-east-1")
 	t.Setenv("EVIDENCE_BUCKET", "vinculo-vial-evidence-test")
 	for _, key := range []string{"EVIDENCE_MAX_PART_BYTES", "S3_PUT_TIMEOUT_MS", "S3_GET_TIMEOUT_MS", "S3_BREAKER_FAILURE_THRESHOLD", "S3_BREAKER_OPEN_DURATION_MS"} {
@@ -249,5 +250,23 @@ func TestLoad_Evidencia_ValoresInvalidosAbortanElArranque(t *testing.T) {
 				t.Fatalf("Load() debía devolver un error con %s=%s", caso[0], caso[1])
 			}
 		})
+	}
+}
+
+func TestLoad_VerdictQueue_DefaultYValorExplicito(t *testing.T) {
+	setRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.VerdictQueue != "alert.ia-evidence-validated.q" {
+		t.Errorf("VerdictQueue = %q, se esperaba el nombre del contrato", cfg.VerdictQueue)
+	}
+
+	t.Setenv("VERDICT_QUEUE", "otra.cola.q")
+	cfg, err = Load()
+	if err != nil || cfg.VerdictQueue != "otra.cola.q" {
+		t.Errorf("VerdictQueue = %q, err = %v; se esperaba el valor explícito", cfg.VerdictQueue, err)
 	}
 }
