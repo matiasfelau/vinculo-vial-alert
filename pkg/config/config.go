@@ -34,6 +34,13 @@ type Config struct {
 	MaxRetries                     int64
 	AttemptTTL                     time.Duration
 	RetryAfter                     time.Duration
+	S3Region                       string
+	EvidenceBucket                 string
+	EvidenceMaxPartBytes           int64
+	S3PutTimeout                   time.Duration
+	S3GetTimeout                   time.Duration
+	S3BreakerFailureThreshold      int
+	S3BreakerOpenDuration          time.Duration
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -46,6 +53,8 @@ func Load() (Config, error) {
 		InternalServiceToken: os.Getenv("INTERNAL_SERVICE_TOKEN"),
 		RabbitMQURL:          os.Getenv("RABBITMQ_URL"),
 		RabbitMQExchange:     os.Getenv("RABBITMQ_EXCHANGE"),
+		S3Region:             os.Getenv("S3_REGION"),
+		EvidenceBucket:       os.Getenv("EVIDENCE_BUCKET"),
 	}
 
 	required := map[string]string{
@@ -54,6 +63,8 @@ func Load() (Config, error) {
 		"INTERNAL_SERVICE_TOKEN": cfg.InternalServiceToken,
 		"RABBITMQ_URL":           cfg.RabbitMQURL,
 		"RABBITMQ_EXCHANGE":      cfg.RabbitMQExchange,
+		"S3_REGION":              cfg.S3Region,
+		"EVIDENCE_BUCKET":        cfg.EvidenceBucket,
 	}
 	for key, value := range required {
 		if value == "" {
@@ -178,7 +189,48 @@ func Load() (Config, error) {
 	}
 	cfg.RetryAfter = time.Duration(retryAfterSeconds) * time.Second
 
+	evidenceMaxPartBytes, err := strconv.ParseInt(getEnvDefault("EVIDENCE_MAX_PART_BYTES", "1048576"), 10, 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("EVIDENCE_MAX_PART_BYTES inválido: %w", err)
+	}
+	if evidenceMaxPartBytes < 1 {
+		return Config{}, fmt.Errorf("EVIDENCE_MAX_PART_BYTES inválido: debe ser mayor o igual a 1, vino %d", evidenceMaxPartBytes)
+	}
+	cfg.EvidenceMaxPartBytes = evidenceMaxPartBytes
+
+	if cfg.S3PutTimeout, err = parsePositiveMillis("S3_PUT_TIMEOUT_MS", "5000"); err != nil {
+		return Config{}, err
+	}
+	if cfg.S3GetTimeout, err = parsePositiveMillis("S3_GET_TIMEOUT_MS", "5000"); err != nil {
+		return Config{}, err
+	}
+	if cfg.S3BreakerOpenDuration, err = parsePositiveMillis("S3_BREAKER_OPEN_DURATION_MS", "30000"); err != nil {
+		return Config{}, err
+	}
+
+	s3BreakerThreshold, err := strconv.Atoi(getEnvDefault("S3_BREAKER_FAILURE_THRESHOLD", "5"))
+	if err != nil {
+		return Config{}, fmt.Errorf("S3_BREAKER_FAILURE_THRESHOLD inválido: %w", err)
+	}
+	if s3BreakerThreshold < 1 {
+		return Config{}, fmt.Errorf("S3_BREAKER_FAILURE_THRESHOLD inválido: debe ser mayor o igual a 1, vino %d", s3BreakerThreshold)
+	}
+	cfg.S3BreakerFailureThreshold = s3BreakerThreshold
+
 	return cfg, nil
+}
+
+// parsePositiveMillis lee una variable de entorno en milisegundos que debe ser
+// estrictamente positiva: un timeout en cero o negativo anularía la protección.
+func parsePositiveMillis(key, fallback string) (time.Duration, error) {
+	millis, err := strconv.Atoi(getEnvDefault(key, fallback))
+	if err != nil {
+		return 0, fmt.Errorf("%s inválido: %w", key, err)
+	}
+	if millis < 1 {
+		return 0, fmt.Errorf("%s inválido: debe ser mayor o igual a 1, vino %d", key, millis)
+	}
+	return time.Duration(millis) * time.Millisecond, nil
 }
 
 func getEnvDefault(key, fallback string) string {

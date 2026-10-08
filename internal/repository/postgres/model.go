@@ -7,13 +7,15 @@ import (
 )
 
 // AlertModel es la representación GORM de la tabla alerts.
-// Deliberadamente no incluye pat_enc: la tabla registra al emisor y el
-// motivo de la alerta, nunca la patente ni su criptograma.
+// Deliberadamente no incluye pat_enc: la tabla registra al emisor, el motivo
+// y el estado de la alerta, nunca la patente ni su criptograma.
 type AlertModel struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey;index:idx_alerts_created_at_id,priority:2,sort:desc"`
-	IssuerID  uuid.UUID `gorm:"type:uuid;index;not null"`
-	AlertType string    `gorm:"column:alert_type;type:varchar(64);not null"`
-	CreatedAt time.Time `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc"`
+	ID             uuid.UUID `gorm:"type:uuid;primaryKey;index:idx_alerts_created_at_id,priority:2,sort:desc"`
+	IssuerID       uuid.UUID `gorm:"type:uuid;index;not null"`
+	AlertType      string    `gorm:"column:alert_type;type:varchar(64);not null"`
+	Status         string    `gorm:"type:varchar(32);not null"`
+	RequiresReview bool      `gorm:"column:requires_review;not null;default:false"`
+	CreatedAt      time.Time `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc"`
 }
 
 // TableName fija el nombre de tabla explícito.
@@ -38,4 +40,25 @@ type AlertDestinationModel struct {
 // TableName fija el nombre de tabla explícito.
 func (AlertDestinationModel) TableName() string {
 	return "alert_destinations"
+}
+
+// AlertEvidenceModel es la representación GORM de la tabla alert_evidence:
+// una referencia a un objeto de evidencia en el almacén, original cifrado o
+// versión redactada. Nunca guarda el binario: solo la clave del objeto. El
+// borrado de la alerta arrastra sus filas en cascada.
+type AlertEvidenceModel struct {
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey"`
+	AlertID   uuid.UUID  `gorm:"type:uuid;not null;uniqueIndex:idx_alert_evidence_slot,priority:1"`
+	Kind      string     `gorm:"type:varchar(16);not null;uniqueIndex:idx_alert_evidence_slot,priority:2"`
+	Role      string     `gorm:"type:varchar(16);not null;uniqueIndex:idx_alert_evidence_slot,priority:3"`
+	Idx       int16      `gorm:"column:idx;type:smallint;not null;uniqueIndex:idx_alert_evidence_slot,priority:4"`
+	S3Key     string     `gorm:"column:s3_key;type:text;not null;uniqueIndex"`
+	SHA256    *string    `gorm:"column:sha256;type:char(64)"`
+	CreatedAt time.Time  `gorm:"type:timestamptz;not null"`
+	Alert     AlertModel `gorm:"foreignKey:AlertID;references:ID;constraint:OnDelete:CASCADE"`
+}
+
+// TableName fija el nombre de tabla explícito.
+func (AlertEvidenceModel) TableName() string {
+	return "alert_evidence"
 }

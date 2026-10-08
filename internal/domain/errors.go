@@ -41,6 +41,14 @@ var ErrIssuerUnderReview = errors.New("el emisor está en revisión")
 // del emisor: no hay a quién avisar. El handler lo mapea a 404.
 var ErrNotInNetwork = errors.New("el vehículo no está en la red")
 
+// ErrAttemptNotFound indica que el intento no existe o pertenece a otro
+// usuario; no se distingue. El handler lo mapea a 404.
+var ErrAttemptNotFound = errors.New("el intento no existe")
+
+// ErrAttemptExpired indica que el intento venció o ya lo consumió otra
+// solicitud. El handler lo mapea a 410: la app repite la llamada del intento.
+var ErrAttemptExpired = errors.New("el intento venció")
+
 // ErrInvalidCursor indica que el cursor de paginación del inbox no pudo
 // decodificarse. El handler debe mapear este error a 400 sin exponer el
 // detalle interno del formato del cursor.

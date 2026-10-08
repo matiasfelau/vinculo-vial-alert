@@ -229,3 +229,114 @@ func mapaDe(t *testing.T, raw json.RawMessage) map[string]any {
 	}
 	return m
 }
+
+// ddlAlertsLegacy y ddlDestinationsLegacy son el esquema previo a US-08: sin
+// alerts.status. En una sola línea y con el formato de GORM (ver
+// ddlOutboxLegacy).
+const (
+	ddlAlertsLegacy       = "CREATE TABLE `alerts` (`id` uuid,`issuer_id` uuid NOT NULL,`alert_type` varchar(64) NOT NULL,`created_at` timestamptz NOT NULL,PRIMARY KEY (`id`))"
+	ddlDestinationsLegacy = "CREATE TABLE `alert_destinations` (`id` uuid,`alert_id` uuid NOT NULL,`owner_id` uuid NOT NULL,PRIMARY KEY (`id`),CONSTRAINT `fk_alert_destinations_alert` FOREIGN KEY (`alert_id`) REFERENCES `alerts`(`id`) ON DELETE CASCADE)"
+)
+
+func nuevaDBConAlertasLegacy(t *testing.T) (*gorm.DB, []uuid.UUID) {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("no se pudo abrir la base de datos de prueba: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("no se pudo obtener *sql.DB: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+		t.Fatalf("no se pudo activar foreign_keys: %v", err)
+	}
+	for _, ddl := range []string{ddlAlertsLegacy, ddlDestinationsLegacy} {
+		if err := db.Exec(ddl).Error; err != nil {
+			t.Fatalf("no se pudo crear el esquema viejo: %v", err)
+		}
+	}
+
+	ids := []uuid.UUID{uuid.New(), uuid.New()}
+	for _, id := range ids {
+		err := db.Exec("INSERT INTO alerts (id, issuer_id, alert_type, created_at) VALUES (?, ?, 'CRASHED', ?)", id, uuid.New(), time.Now().UTC()).Error
+		if err != nil {
+			t.Fatalf("no se pudo insertar la alerta vieja: %v", err)
+		}
+		err = db.Exec("INSERT INTO alert_destinations (id, alert_id, owner_id) VALUES (?, ?, ?)", uuid.New(), id, uuid.New()).Error
+		if err != nil {
+			t.Fatalf("no se pudo insertar el destinatario viejo: %v", err)
+		}
+	}
+	return db, ids
+}
+
+func TestAutoMigrate_AlertasViejas_QuedanEnACTIVE(t *testing.T) {
+	db, ids := nuevaDBConAlertasLegacy(t)
+
+	if err := AutoMigrate(db); err != nil {
+		t.Fatalf("AutoMigrate falló sobre el esquema viejo: %v", err)
+	}
+
+	for _, id := range ids {
+		var status string
+		var requiresReview bool
+		if err := db.Table("alerts").Select("status", "requires_review").Where("id = ?", id).Row().Scan(&status, &requiresReview); err != nil {
+			t.Fatalf("no se pudo leer la alerta migrada: %v", err)
+		}
+		if status != "ACTIVE" {
+			t.Errorf("status = %q, se esperaba ACTIVE: eran visibles antes de la validación", status)
+		}
+		if requiresReview {
+			t.Error("requires_review debía quedar en false")
+		}
+		if contar(t, db, "alert_destinations", "alert_id = ?", id) != 1 {
+			t.Error("los destinatarios de las alertas existentes debían conservarse")
+		}
+	}
+}
+
+func TestAutoMigrate_AlertasViejas_StatusPasaANotNullYConservaElCascade(t *testing.T) {
+	db, ids := nuevaDBConAlertasLegacy(t)
+	if err := AutoMigrate(db); err != nil {
+		t.Fatalf("AutoMigrate falló sobre el esquema viejo: %v", err)
+	}
+
+	err := db.Exec("INSERT INTO alerts (id, issuer_id, alert_type, created_at) VALUES (?, ?, 'CRASHED', ?)", uuid.New(), uuid.New(), time.Now().UTC()).Error
+	if err == nil {
+		t.Error("status debía ser NOT NULL tras la migración")
+	}
+
+	if err := db.Exec("DELETE FROM alerts WHERE id = ?", ids[0]).Error; err != nil {
+		t.Fatalf("no se pudo borrar la alerta: %v", err)
+	}
+	if contar(t, db, "alert_destinations", "alert_id = ?", ids[0]) != 0 {
+		t.Error("el borrado en cascada de los destinatarios debía seguir funcionando")
+	}
+}
+
+func TestAutoMigrate_AlertasViejas_EsIdempotente(t *testing.T) {
+	db, ids := nuevaDBConAlertasLegacy(t)
+
+	for i := 0; i < 2; i++ {
+		if err := AutoMigrate(db); err != nil {
+			t.Fatalf("AutoMigrate #%d falló: %v", i+1, err)
+		}
+	}
+
+	if contar(t, db, "alerts", "status = 'ACTIVE'") != int64(len(ids)) {
+		t.Error("las alertas debían seguir en ACTIVE tras una segunda migración")
+	}
+}
+
+func TestAutoMigrate_BaseNueva_CreaAlertEvidenceEIssuerRestrictions(t *testing.T) {
+	db := nuevaDBDePrueba(t)
+
+	for _, tabla := range []string{"alert_evidence", "alert_attempts", "issuer_restrictions", "outbox_events"} {
+		if !db.Migrator().HasTable(tabla) {
+			t.Errorf("falta la tabla %s", tabla)
+		}
+	}
+}

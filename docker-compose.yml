@@ -15,6 +15,18 @@ services:
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?la variable INTERNAL_SERVICE_TOKEN es obligatoria en .env}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@vinculo-vial-rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-vvi.topic.exchange}
+      S3_REGION: ${S3_REGION:?la variable S3_REGION es obligatoria en .env}
+      EVIDENCE_BUCKET: ${EVIDENCE_BUCKET:?la variable EVIDENCE_BUCKET es obligatoria en .env}
+      EVIDENCE_MAX_PART_BYTES: ${EVIDENCE_MAX_PART_BYTES:-1048576}
+      S3_PUT_TIMEOUT_MS: ${S3_PUT_TIMEOUT_MS:-5000}
+      S3_GET_TIMEOUT_MS: ${S3_GET_TIMEOUT_MS:-5000}
+      S3_BREAKER_FAILURE_THRESHOLD: ${S3_BREAKER_FAILURE_THRESHOLD:-5}
+      S3_BREAKER_OPEN_DURATION_MS: ${S3_BREAKER_OPEN_DURATION_MS:-30000}
+      # Credenciales de AWS: cadena estándar del SDK. En local vienen de .env;
+      # en producción se usa el rol IAM y estas quedan sin definir.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     depends_on:
       alert-db:
         condition: service_healthy

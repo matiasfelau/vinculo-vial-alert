@@ -13,7 +13,7 @@ func nuevoRouterHealthDePrueba() *gin.Engine {
 	healthHandler := NewHealthHandler()
 	readyHandler := NewReadyHandler(&mockDBPinger{})
 	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
-	alertHandler := NewAlertHandler(nil)
+	alertHandler := NewAlertHandler(nil, testMaxPartBytes, retryAfterDePrueba)
 	inboxHandler := NewInboxHandler(nil)
 	return NewRouter(alertHandler, NewAttemptHandler(nil, 0), inboxHandler, healthHandler, readyHandler, depsHandler)
 }

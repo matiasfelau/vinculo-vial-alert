@@ -2,21 +2,24 @@ package domain
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
-// AlertRepository persiste la alerta emitida por el usuario junto con sus
-// destinatarios y, si corresponde, el evento de outbox a publicar. Los tres
-// INSERT deben ejecutarse en una única transacción: una alerta sin
-// destinatarios persistidos es invisible en el inbox y no se puede
-// reconstruir (no se guarda pat_enc), y un evento de outbox persistido fuera
-// de la transacción de la alerta podría quedar huérfano o publicarse por una
-// alerta que en definitiva no se guardó.
-//
-// outboxEvent es nil cuando no hay destinatarios (ej. el emisor era el único
-// dueño, filtrado por la regla de autoalerta): no tiene sentido publicar un
-// evento sin nadie a quien notificar.
+// AlertRepository persiste las alertas.
 type AlertRepository interface {
-	Create(ctx context.Context, alert *AlertHistory, destinationOwnerIDs []uuid.UUID, outboxEvent *OutboxEvent) error
+	// CreatePending consume el intento del emisor y crea la alerta en
+	// PENDING_VALIDATION con sus destinatarios, las filas de evidencia
+	// ORIGINAL y el evento de outbox, todo en una única transacción: una
+	// alerta sin destinatarios es invisible en el buzón, y un evento de
+	// outbox persistido fuera de la transacción podría quedar huérfano o
+	// publicarse por una alerta que no se guardó.
+	//
+	// El intento se borra condicionalmente (mismo id, mismo emisor, no
+	// vencido en now). Si no afecta ninguna fila, el intento venció o ya lo
+	// consumió otra solicitud: devuelve ErrAttemptExpired y no persiste nada.
+	CreatePending(ctx context.Context, now time.Time, alert *AlertHistory, destinationOwnerIDs []uuid.UUID, evidence []Evidence, outboxEvent OutboxEvent) error
+	// Exists indica si la alerta existe.
+	Exists(ctx context.Context, id uuid.UUID) (bool, error)
 }

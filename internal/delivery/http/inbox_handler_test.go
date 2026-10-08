@@ -35,7 +35,7 @@ func (m *mockInboxRepo) FindByOwner(ctx context.Context, ownerID uuid.UUID, curs
 func nuevoRouterInboxDePrueba(repo *mockInboxRepo) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	inboxHandler := NewInboxHandler(inbox.NewGetInboxService(repo))
-	alertHandler := NewAlertHandler(nil)
+	alertHandler := NewAlertHandler(nil, testMaxPartBytes, retryAfterDePrueba)
 	healthHandler := NewHealthHandler()
 	readyHandler := NewReadyHandler(&mockDBPinger{})
 	depsHandler := NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true})
