@@ -109,7 +109,7 @@ func TestExecute_GreenYYellow_ActivanYBorranLosOriginalesDespuesDeLaTransaccion(
 			repo := &mockRepo{resolution: domain.Resolution{Applied: true, OriginalKeys: []string{"alerts/x/original/general-0.bin", "alerts/x/original/plate-0.bin"}}}
 			store := &mockStore{}
 
-			err := nuevoServicio(repo, store).Execute(context.Background(), resultado(verdict, alertID))
+			err := nuevoServicio(repo, store).Execute(context.Background(), resultado(verdict, alertID, redactada(alertID, domain.EvidenceRoleGeneral, 0)))
 
 			if err != nil {
 				t.Fatalf("error inesperado: %v", err)

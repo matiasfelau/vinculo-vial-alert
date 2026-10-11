@@ -41,8 +41,22 @@ func NewApplyVerdictService(repo domain.VerdictRepository, store domain.Evidence
 // condicional, así que un duplicado o un veredicto tardío (alerta ya activa,
 // rechazada o EXPIRED) no cambia nada y termina sin error. Todo error que
 // devuelve es transitorio (base caída, timeout) y el mensaje se reintenta.
+//
+// Un YELLOW sin imágenes redactadas se resuelve como RED sin fraude (ver
+// abajo): la transición sigue siendo el DELETE condicional de Reject.
 func (s *ApplyVerdictService) Execute(ctx context.Context, result domain.ValidationResult) error {
 	if result.Verdict == domain.VerdictRed {
+		return s.reject(ctx, result)
+	}
+	if result.Verdict == domain.VerdictYellow && len(result.Redacted) == 0 {
+		// Regla de entrega según evidencia: un YELLOW sin ninguna versión
+		// redactada no se activa ni emite alert.created. Se resuelve como un RED
+		// sin fraude: alert.rejected con los códigos de IA más
+		// REDACTION_UNAVAILABLE (que solo agrega Alert) y los originales en
+		// cuarentena. GREEN, con o sin redactadas, y YELLOW con al menos una
+		// redactada siguen el camino normal.
+		slog.Info("verdict service: YELLOW sin imágenes redactadas, se rechaza sin fraude", "alert_id", result.AlertID)
+		result.ReasonCodes = append(append([]domain.ReasonCode(nil), result.ReasonCodes...), domain.ReasonRedactionUnavailable)
 		return s.reject(ctx, result)
 	}
 	return s.activate(ctx, result)
