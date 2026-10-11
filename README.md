@@ -90,3 +90,22 @@ El servicio sigue Clean Architecture:
 ```
 
 La capa `domain` no depende de frameworks ni librerías externas.
+
+## Regla de entrega según evidencia
+
+Al resolver el veredicto de IA (`ia.evidence.validated.*`), Alert decide si la
+alerta se entrega según la evidencia redactada que trae el evento:
+
+| Veredicto | `redacted` | Resultado |
+|---|---|---|
+| GREEN | con o sin imágenes | ACTIVE + `alert.created` |
+| YELLOW | al menos una imagen | ACTIVE (`requires_review`) + `alert.created` |
+| YELLOW | vacío | no se activa ni se emite `alert.created`: se resuelve como un RED sin fraude |
+| RED | no aplica | se borra la alerta + `alert.rejected` |
+
+El YELLOW sin imágenes redactadas borra la alerta (`DELETE ... WHERE status =
+PENDING_VALIDATION`), publica `alert.rejected` con los `reason_codes` de IA más
+`REDACTION_UNAVAILABLE` y deja los originales en cuarentena (`status=quarantine`).
+`REDACTION_UNAVAILABLE` lo agrega solo Alert y no es un código de fraude: no
+penaliza al emisor. La transición es condicional, así que un duplicado o un
+veredicto tardío no cambia nada y no vuelve a publicar.

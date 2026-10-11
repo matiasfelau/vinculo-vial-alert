@@ -36,6 +36,13 @@ const (
 	ReasonContextUncertain   ReasonCode = "CONTEXT_UNCERTAIN"
 )
 
+// ReasonRedactionUnavailable lo agrega Alert (nunca IA) cuando un veredicto
+// YELLOW llega sin ninguna imagen redactada: sin evidencia que mostrarle al
+// dueño la alerta no se entrega y se resuelve como un RED sin fraude. No
+// pertenece al contrato de IA (IsKnown es false, así que un evento de IA que
+// lo traiga es inválido) ni al conjunto de fraude: no penaliza al emisor.
+const ReasonRedactionUnavailable ReasonCode = "REDACTION_UNAVAILABLE"
+
 // reasonSeverity es el semáforo de cada código del contrato de veredicto.
 var reasonSeverity = map[ReasonCode]Verdict{
 	ReasonNoVehicle:          VerdictRed,
