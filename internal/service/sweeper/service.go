@@ -1,5 +1,6 @@
 // Package sweeper ejecuta las limpiezas periódicas del servicio: intentos
-// vencidos, alertas que nunca recibieron veredicto y evidencia redactada cuya
+// vencidos, alertas que nunca recibieron veredicto, alertas rechazadas o
+// vencidas fuera de la ventana de Enviados y evidencia redactada cuya
 // retención venció.
 package sweeper
 
@@ -27,29 +28,32 @@ type Sweeper struct {
 	storeAvailable func() bool
 	pendingTimeout time.Duration
 	retention      time.Duration
+	sentRetention  time.Duration
 	now            func() time.Time
 }
 
 // New construye el Sweeper. storeAvailable indica si el almacén admite
 // tráfico (false con el circuito abierto): sin él no se intenta borrar nada.
-// pendingTimeout es PENDING_TIMEOUT_MINUTES y retention
-// EVIDENCE_RETENTION_DAYS, la única variable que controla cuánto vive la
-// evidencia redactada.
-func New(repo domain.SweeperRepository, store domain.EvidenceStore, storeAvailable func() bool, pendingTimeout, retention time.Duration) *Sweeper {
+// pendingTimeout es PENDING_TIMEOUT_MINUTES, retention
+// EVIDENCE_RETENTION_DAYS (la única variable que controla cuánto vive la
+// evidencia redactada) y sentRetention SENT_RETENTION_DAYS (cuánto vive en
+// Enviados una alerta REJECTED o EXPIRED).
+func New(repo domain.SweeperRepository, store domain.EvidenceStore, storeAvailable func() bool, pendingTimeout, retention, sentRetention time.Duration) *Sweeper {
 	return &Sweeper{
 		repo:           repo,
 		store:          store,
 		storeAvailable: storeAvailable,
 		pendingTimeout: pendingTimeout,
 		retention:      retention,
+		sentRetention:  sentRetention,
 		now:            func() time.Time { return time.Now().UTC() },
 	}
 }
 
-// RunOnce ejecuta una vuelta completa. Las tres reglas son independientes: si
-// una falla, las demás igual corren, y el error devuelto junta los de cada
-// una. Cada regla es idempotente, así que repetirla en la próxima vuelta (o
-// desde otra réplica) no tiene efectos.
+// RunOnce ejecuta una vuelta completa. Las reglas son independientes: si una
+// falla, las demás igual corren, y el error devuelto junta los de cada una.
+// Cada regla es idempotente, así que repetirla en la próxima vuelta (o desde
+// otra réplica) no tiene efectos.
 func (s *Sweeper) RunOnce(ctx context.Context) error {
 	now := s.now()
 	var errs []error
@@ -61,11 +65,18 @@ func (s *Sweeper) RunOnce(ctx context.Context) error {
 		slog.Info("sweeper: intentos vencidos borrados", "cantidad", attempts)
 	}
 
-	expired, err := s.repo.ExpirePending(ctx, now.Add(-s.pendingTimeout))
+	expired, err := s.repo.ExpirePending(ctx, now.Add(-s.pendingTimeout), now)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("sweeper: error al expirar las alertas pendientes: %w", err))
 	} else if expired > 0 {
 		slog.Warn("sweeper: alertas sin veredicto pasadas a EXPIRED", "cantidad", expired)
+	}
+
+	sent, err := s.repo.DeleteExpiredSent(ctx, now.Add(-s.sentRetention))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("sweeper: error al borrar las alertas rechazadas o vencidas fuera de la ventana de Enviados: %w", err))
+	} else if sent > 0 {
+		slog.Info("sweeper: alertas rechazadas o vencidas fuera de la ventana de Enviados borradas", "cantidad", sent)
 	}
 
 	if err := s.sweepRedacted(ctx, now.Add(-s.retention)); err != nil {

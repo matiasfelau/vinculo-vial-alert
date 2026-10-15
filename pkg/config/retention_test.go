@@ -32,3 +32,31 @@ func TestLoad_RetencionDeLaEvidencia_ValoresInvalidosAbortanElArranque(t *testin
 		})
 	}
 }
+
+func TestLoad_RetencionDeEnviados(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("SENT_RETENTION_DAYS", "")
+	cfg, err := Load()
+	if err != nil || cfg.SentRetention != 30*24*time.Hour {
+		t.Fatalf("SentRetention = %v, err = %v; se esperaban 30 días por defecto", cfg.SentRetention, err)
+	}
+
+	t.Setenv("SENT_RETENTION_DAYS", "14")
+	cfg, err = Load()
+	if err != nil || cfg.SentRetention != 14*24*time.Hour {
+		t.Fatalf("SentRetention = %v, err = %v; se esperaban 14 días", cfg.SentRetention, err)
+	}
+}
+
+func TestLoad_RetencionDeEnviados_ValoresInvalidosAbortanElArranque(t *testing.T) {
+	for _, valor := range []string{"0", "-3", "un mes", "1.5"} {
+		t.Run(valor, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("SENT_RETENTION_DAYS", valor)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() debía fallar con SENT_RETENTION_DAYS=%s", valor)
+			}
+		})
+	}
+}

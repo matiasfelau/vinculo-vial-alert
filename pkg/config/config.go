@@ -47,6 +47,7 @@ type Config struct {
 	VerdictQueue                   string
 	UserStatusQueue                string
 	EvidenceRetention              time.Duration
+	SentRetention                  time.Duration
 	PendingTimeout                 time.Duration
 	SweeperInterval                time.Duration
 }
@@ -236,7 +237,16 @@ func Load() (Config, error) {
 	}
 	cfg.EvidenceRetention = time.Duration(retentionDays) * hoursPerDay
 
-	pendingTimeoutMinutes, err := strconv.Atoi(getEnvDefault("PENDING_TIMEOUT_MINUTES", "30"))
+	sentRetentionDays, err := strconv.Atoi(getEnvDefault("SENT_RETENTION_DAYS", "30"))
+	if err != nil {
+		return Config{}, fmt.Errorf("SENT_RETENTION_DAYS inválido: %w", err)
+	}
+	if sentRetentionDays < 1 {
+		return Config{}, fmt.Errorf("SENT_RETENTION_DAYS inválido: debe ser mayor o igual a 1, vino %d", sentRetentionDays)
+	}
+	cfg.SentRetention = time.Duration(sentRetentionDays) * hoursPerDay
+
+	pendingTimeoutMinutes, err := strconv.Atoi(getEnvDefault("PENDING_TIMEOUT_MINUTES", "1440"))
 	if err != nil {
 		return Config{}, fmt.Errorf("PENDING_TIMEOUT_MINUTES inválido: %w", err)
 	}
