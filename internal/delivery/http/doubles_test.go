@@ -263,6 +263,7 @@ func (d *testDeps) router() *gin.Engine {
 		NewAttemptHandler(attemptService, retryAfterDePrueba),
 		NewOwnerHandler(owner.NewService(d.owner, d.store, testRetention), retryAfterDePrueba),
 		NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{}, testRetention)),
+		NewSentHandler(nil),
 		NewHealthHandler(),
 		NewReadyHandler(&mockDBPinger{}),
 		NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true}),

@@ -103,7 +103,7 @@ func (r *VerdictRepository) Activate(ctx context.Context, result domain.Validati
 			return nil
 		}
 
-		event, err := domain.NewAlertCreatedEvent(uuid.New(), summary.IssuerID, domain.AlertType(summary.AlertType), owners, now)
+		event, err := domain.NewAlertCreatedEvent(uuid.New(), summary.IssuerID, result.AlertID, domain.AlertType(summary.AlertType), owners, now)
 		if err != nil {
 			return fmt.Errorf("error al construir alert.created: %w", err)
 		}

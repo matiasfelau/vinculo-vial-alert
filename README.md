@@ -130,6 +130,29 @@ nada.
 borra las alertas `REJECTED` y `EXPIRED` con `created_at` anterior a ella. Las
 `ACTIVE` y las `PENDING_VALIDATION` no se ven afectadas.
 
+## Enviados (`GET /api/v1/alerts/sent`)
+
+Lista las alertas que envió el usuario de `X-User-Id` (nunca un `issuer_id` por
+parámetro) y en qué estado está cada una. Pagina por cursor como el buzón:
+`limit` por defecto 20 y máximo 50, orden `created_at DESC, id DESC`.
+Solo devuelve alertas creadas dentro de la ventana `SENT_RETENTION_DAYS`.
+
+```json
+{
+  "items": [
+    { "id": "uuid", "alert_type": "CRASHED", "created_at": "RFC3339",
+      "status": "PENDING_VALIDATION | ACTIVE | REJECTED | EXPIRED",
+      "seen_at": "RFC3339 | null" }
+  ],
+  "next_cursor": "string | null"
+}
+```
+
+El anonimato es estructural: `domain.SentItem` solo tiene esos cinco campos y la
+consulta ni siquiera toca `alert_destinations`. El emisor nunca ve destinatarios,
+cantidad de dueños, patente, evidencia, veredicto, motivo de rechazo,
+`requires_review` ni quién leyó (solo cuándo, en `seen_at`).
+
 ## Lectura del dueño (`seen`)
 
 `PUT /api/v1/alerts/{alert_id}/seen` lo llama el destinatario al abrir el chat
@@ -156,7 +179,7 @@ viaja solo en `actor`, nunca en el payload.
 | `eventType` | `actor` | Payload |
 |---|---|---|
 | `alert.evidence.uploaded` | `null` | `{ alert_id, alert_type, pat_enc_ia, bucket, evidence }` |
-| `alert.created` | emisor | `{ owner_ids, alert_type }` |
+| `alert.created` | emisor | `{ owner_ids, alert_type, alert_id }` |
 | `alert.rejected` | emisor | `{ alert_id, reason_codes }` |
 | `alert.expired` | emisor | `{ alert_id, alert_type }` |
 | `alert.seen` | emisor | `{ alert_id, alert_type }` |
