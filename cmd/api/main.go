@@ -139,7 +139,7 @@ func main() {
 			})
 	}()
 
-	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention)
+	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention, cfg.SentRetention)
 	sweeperDone := make(chan struct{})
 	go func() {
 		defer close(sweeperDone)

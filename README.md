@@ -115,3 +115,31 @@ El YELLOW sin imágenes redactadas sigue ese mismo camino: publica
 `REDACTION_UNAVAILABLE` lo agrega solo Alert y no es un código de fraude: no
 penaliza al emisor. La transición es condicional, así que un duplicado o un
 veredicto tardío no cambia nada y no vuelve a publicar.
+
+## Vencimiento y retención de Enviados
+
+Una alerta que no recibe veredicto en `PENDING_TIMEOUT_MINUTES` (por defecto
+1440, 24 h) la pasa el sweeper a `EXPIRED`. El sweeper selecciona los ids
+vencidos, hace la transición condicional alerta por alerta (`UPDATE ... WHERE
+status = PENDING_VALIDATION`) y, solo por las que efectivamente transicionó,
+encola `alert.expired` en la misma transacción (por lotes de 500). Una réplica
+que pierde la carrera, o un veredicto que ya resolvió la alerta, no publica
+nada.
+
+`SENT_RETENTION_DAYS` (por defecto 30) es la ventana de Enviados: el sweeper
+borra las alertas `REJECTED` y `EXPIRED` con `created_at` anterior a ella. Las
+`ACTIVE` y las `PENDING_VALIDATION` no se ven afectadas.
+
+## Eventos publicados
+
+Todos salen por el transactional outbox, con el envelope estándar
+`{ eventId, eventType, timestamp, producer, actor, payload }`. El emisor
+viaja solo en `actor`, nunca en el payload.
+
+| `eventType` | `actor` | Payload |
+|---|---|---|
+| `alert.evidence.uploaded` | `null` | `{ alert_id, alert_type, pat_enc_ia, bucket, evidence }` |
+| `alert.created` | emisor | `{ owner_ids, alert_type }` |
+| `alert.rejected` | emisor | `{ alert_id, reason_codes }` |
+| `alert.expired` | emisor | `{ alert_id, alert_type }` |
+| `alert.reported` | emisor reportado | `{ alert_id, reason }` |

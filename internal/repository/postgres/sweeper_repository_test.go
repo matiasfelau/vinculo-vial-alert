@@ -81,7 +81,7 @@ func TestSweeperRepository_ExpirePending_SoloLasPendientesVencidas(t *testing.T)
 	activaVieja := crearAlertaConEstado(t, db, uuid.New(), domain.AlertTypeCrashed, corte.Add(-24*time.Hour), domain.AlertStatusActive, uuid.New())
 	yaExpirada := crearAlertaConEstado(t, db, uuid.New(), domain.AlertTypeCrashed, corte.Add(-24*time.Hour), domain.AlertStatusExpired, uuid.New())
 
-	expiradas, err := repo.ExpirePending(context.Background(), corte)
+	expiradas, err := repo.ExpirePending(context.Background(), corte, ahoraSweeper)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestSweeperRepository_ExpirePending_NoTocaUnaAlertaQueUnVeredictoYaActivo(t
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	expiradas, err := NewSweeperRepository(e.db).ExpirePending(context.Background(), time.Now().UTC().Add(time.Hour))
+	expiradas, err := NewSweeperRepository(e.db).ExpirePending(context.Background(), time.Now().UTC().Add(time.Hour), time.Now().UTC())
 
 	if err != nil || expiradas != 0 {
 		t.Fatalf("expiradas = %d, err = %v; se esperaba 0", expiradas, err)
@@ -248,12 +248,13 @@ func TestSweeperRepository_ContextoVencido_ClasificaComoBaseNoDisponible(t *test
 	defer cancel()
 
 	_, errAttempts := repo.DeleteExpiredAttempts(ctx, ahoraSweeper)
-	_, errExpire := repo.ExpirePending(ctx, ahoraSweeper)
+	_, errExpire := repo.ExpirePending(ctx, ahoraSweeper, ahoraSweeper)
 	_, errFind := repo.FindExpiredRedacted(ctx, ahoraSweeper, 10)
+	_, errSent := repo.DeleteExpiredSent(ctx, ahoraSweeper)
 	errDelete := repo.DeleteEvidenceRows(ctx, []uuid.UUID{uuid.New()})
 
 	for nombre, err := range map[string]error{
-		"DeleteExpiredAttempts": errAttempts, "ExpirePending": errExpire, "FindExpiredRedacted": errFind, "DeleteEvidenceRows": errDelete,
+		"DeleteExpiredAttempts": errAttempts, "ExpirePending": errExpire, "DeleteExpiredSent": errSent, "FindExpiredRedacted": errFind, "DeleteEvidenceRows": errDelete,
 	} {
 		if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 			t.Errorf("%s: error = %v, se esperaba ErrDatabaseUnavailable", nombre, err)

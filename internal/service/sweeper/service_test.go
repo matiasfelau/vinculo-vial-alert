@@ -16,8 +16,9 @@ import (
 var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
 const (
-	testPending   = 30 * time.Minute
-	testRetention = 30 * 24 * time.Hour
+	testPending       = 24 * time.Hour
+	testRetention     = 30 * 24 * time.Hour
+	testSentRetention = 14 * 24 * time.Hour
 )
 
 // mockRepo modela la tabla de evidencia vencida en memoria: FindExpiredRedacted
@@ -32,7 +33,13 @@ type mockRepo struct {
 	expired      int64
 	expireErr    error
 	expireCutoff time.Time
+	expireNow    time.Time
 	expireCalled bool
+
+	sentDeleted int64
+	sentErr     error
+	sentCutoff  time.Time
+	sentCalled  bool
 
 	rows         []domain.ExpiredRedacted
 	findErr      error
@@ -48,10 +55,17 @@ func (m *mockRepo) DeleteExpiredAttempts(_ context.Context, now time.Time) (int6
 	return m.attemptsDeleted, m.attemptsErr
 }
 
-func (m *mockRepo) ExpirePending(_ context.Context, createdBefore time.Time) (int64, error) {
+func (m *mockRepo) ExpirePending(_ context.Context, createdBefore, now time.Time) (int64, error) {
 	m.expireCalled = true
 	m.expireCutoff = createdBefore
+	m.expireNow = now
 	return m.expired, m.expireErr
+}
+
+func (m *mockRepo) DeleteExpiredSent(_ context.Context, createdBefore time.Time) (int64, error) {
+	m.sentCalled = true
+	m.sentCutoff = createdBefore
+	return m.sentDeleted, m.sentErr
 }
 
 func (m *mockRepo) FindExpiredRedacted(_ context.Context, validatedBefore time.Time, limit int) ([]domain.ExpiredRedacted, error) {
@@ -118,7 +132,7 @@ func (m *mockStore) deletedKeys() []string {
 }
 
 func nuevoSweeper(repo *mockRepo, store *mockStore, disponible bool) *Sweeper {
-	s := New(repo, store, func() bool { return disponible }, testPending, testRetention)
+	s := New(repo, store, func() bool { return disponible }, testPending, testRetention, testSentRetention)
 	s.now = func() time.Time { return ahora }
 	return s
 }
@@ -152,6 +166,40 @@ func TestRunOnce_Pendientes_ExpiraLasMasViejasQueElTimeout(t *testing.T) {
 
 	if want := ahora.Add(-testPending); !repo.expireCutoff.Equal(want) {
 		t.Errorf("corte = %v, se esperaba now - PENDING_TIMEOUT = %v", repo.expireCutoff, want)
+	}
+	if !repo.expireNow.Equal(ahora) {
+		t.Errorf("now = %v, se esperaba %v como instante de los eventos alert.expired", repo.expireNow, ahora)
+	}
+}
+
+func TestRunOnce_Enviados_BorraLasMasViejasQueLaRetencion(t *testing.T) {
+	repo := &mockRepo{sentDeleted: 3}
+
+	if err := nuevoSweeper(repo, &mockStore{}, true).RunOnce(context.Background()); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if want := ahora.Add(-testSentRetention); !repo.sentCutoff.Equal(want) {
+		t.Errorf("corte = %v, se esperaba now - SENT_RETENTION_DAYS = %v", repo.sentCutoff, want)
+	}
+}
+
+func TestRunOnce_Enviados_NoDependeDelAlmacenYUnaFallaNoCortaLasDemasReglas(t *testing.T) {
+	repo := &mockRepo{sentErr: domain.ErrDatabaseUnavailable, rows: filas(2)}
+	store := &mockStore{}
+
+	err := nuevoSweeper(repo, store, true).RunOnce(context.Background())
+
+	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
+		t.Fatalf("error = %v, se esperaba que la falla de la regla llegara al resultado", err)
+	}
+	if !repo.sentCalled || len(repo.rowsDeleted) != 2 {
+		t.Errorf("enviados = %v, filas borradas = %d; las demás reglas igual corren", repo.sentCalled, len(repo.rowsDeleted))
+	}
+
+	repo = &mockRepo{}
+	if err := nuevoSweeper(repo, store, false).RunOnce(context.Background()); err != nil || !repo.sentCalled {
+		t.Errorf("err = %v, enviados = %v; con el circuito de S3 abierto esta regla (solo base) igual corre", err, repo.sentCalled)
 	}
 }
 

@@ -14,8 +14,8 @@ func TestLoad_Sweeper_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
-	if cfg.PendingTimeout != 30*time.Minute {
-		t.Errorf("PendingTimeout = %v, se esperaban 30 minutos", cfg.PendingTimeout)
+	if cfg.PendingTimeout != 24*time.Hour {
+		t.Errorf("PendingTimeout = %v, se esperaban 24 horas (1440 minutos)", cfg.PendingTimeout)
 	}
 	if cfg.SweeperInterval != 60*time.Second {
 		t.Errorf("SweeperInterval = %v, se esperaban 60 segundos", cfg.SweeperInterval)
