@@ -52,6 +52,11 @@ type OwnerAlertRepository interface {
 	// CreateReport registra el reporte y encola alert.reported en la misma
 	// transacción. Devuelve ErrAlreadyReported si el dueño ya reportó.
 	CreateReport(ctx context.Context, alertID, ownerID uuid.UUID, reason ReportReason, now time.Time) error
+	// MarkSeen registra que el dueño abrió el chat: fija el seen_at del
+	// destinatario si estaba en nulo (idempotente) y, si además la alerta no
+	// tenía seen_at, lo fija y encola alert.seen en la misma transacción. Solo
+	// el primer dueño dispara el evento, aun con llamadas concurrentes.
+	MarkSeen(ctx context.Context, alertID, ownerID uuid.UUID, now time.Time) error
 }
 
 // EventTypeAlertReported es el eventType (y routing key) del evento que
@@ -76,6 +81,34 @@ func NewAlertReportedEvent(id, issuerID, alertID uuid.UUID, reason ReportReason,
 	return OutboxEvent{
 		ID:        id,
 		EventType: EventTypeAlertReported,
+		Actor:     &issuerID,
+		Payload:   payload,
+		CreatedAt: createdAt,
+	}, nil
+}
+
+// EventTypeAlertSeen es el eventType (y routing key) del evento que avisa al
+// emisor de que el primer dueño abrió el chat de su alerta.
+const EventTypeAlertSeen = "alert.seen"
+
+// AlertSeenPayload es el payload de alert.seen. El emisor va en actor y el
+// dueño que leyó no figura en ningún lado: el emisor sabe cuándo se leyó,
+// nunca quién.
+type AlertSeenPayload struct {
+	AlertID   uuid.UUID `json:"alert_id"`
+	AlertType AlertType `json:"alert_type"`
+}
+
+// NewAlertSeenEvent construye el evento de outbox alert.seen. El emisor va en
+// Actor, nunca en el payload.
+func NewAlertSeenEvent(id, issuerID, alertID uuid.UUID, alertType AlertType, createdAt time.Time) (OutboxEvent, error) {
+	payload, err := json.Marshal(AlertSeenPayload{AlertID: alertID, AlertType: alertType})
+	if err != nil {
+		return OutboxEvent{}, err
+	}
+	return OutboxEvent{
+		ID:        id,
+		EventType: EventTypeAlertSeen,
 		Actor:     &issuerID,
 		Payload:   payload,
 		CreatedAt: createdAt,

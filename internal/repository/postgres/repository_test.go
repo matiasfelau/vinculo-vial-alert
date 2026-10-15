@@ -215,7 +215,7 @@ func TestAlertRepository_CreatePending_PersisteLaAlertaEnPendingValidation(t *te
 		t.Errorf("status = %q, requires_review = %v; se esperaba PENDING_VALIDATION y false", status, requiresReview)
 	}
 
-	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at"}
+	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at"}
 	if got := columnasDe(t, e.db, "alerts"); !reflect.DeepEqual(got, esperadas) {
 		t.Errorf("columnas de alerts = %v, se esperaban %v (la tabla no debe persistir pat_enc ni owner_ids)", got, esperadas)
 	}
@@ -410,7 +410,7 @@ func TestAlertDestinationModel_ColumnasExactas(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 
 	columnas := columnasDe(t, db, "alert_destinations")
-	esperadas := []string{"id", "alert_id", "owner_id"}
+	esperadas := []string{"id", "alert_id", "owner_id", "seen_at"}
 	if !reflect.DeepEqual(columnas, esperadas) {
 		t.Fatalf("columnas de alert_destinations = %v, se esperaban %v", columnas, esperadas)
 	}

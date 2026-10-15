@@ -17,6 +17,7 @@ func NewRouter(alertHandler *AlertHandler, attemptHandler *AttemptHandler, owner
 	v1.GET("/alerts/inbox", inboxHandler.GetInbox)
 	v1.GET("/alerts/:alert_id/evidence/:role/:index", ownerHandler.GetEvidence)
 	v1.PUT("/alerts/:alert_id/feedback", ownerHandler.PutFeedback)
+	v1.PUT("/alerts/:alert_id/seen", ownerHandler.PutSeen)
 	v1.POST("/alerts/:alert_id/report", ownerHandler.PostReport)
 
 	return router

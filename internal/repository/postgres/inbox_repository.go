@@ -13,8 +13,8 @@ import (
 )
 
 // inboxRow es la proyección exacta del JOIN entre alerts, alert_destinations
-// y las valoraciones y reportes del propio destinatario. No incluye issuer_id
-// ni owner_id: solo lo que el DTO de salida puede exponer.
+// y las valoraciones, reportes y lecturas del propio destinatario. No incluye
+// issuer_id ni owner_id: solo lo que el DTO de salida puede exponer.
 //
 // created_at y validated_at se escanean como string: el driver de PostgreSQL
 // entrega un timestamptz, que database/sql formatea como RFC3339Nano al
@@ -29,6 +29,7 @@ type inboxRow struct {
 	ValidatedAt    *string   `gorm:"column:validated_at"`
 	MyFeedback     *string   `gorm:"column:my_feedback"`
 	Reported       bool      `gorm:"column:reported"`
+	Seen           bool      `gorm:"column:seen"`
 }
 
 // inboxEvidenceRow es una imagen redactada de una alerta de la página.
@@ -92,7 +93,8 @@ func (r *InboxRepository) FindByOwner(ctx context.Context, ownerID uuid.UUID, cu
 	query := r.db.WithContext(ctx).
 		Table("alerts").
 		Select("alerts.id, alerts.alert_type, alerts.created_at, alerts.requires_review, alerts.validated_at, "+
-			"alert_feedback.rating AS my_feedback, alert_reports.owner_id IS NOT NULL AS reported").
+			"alert_feedback.rating AS my_feedback, alert_reports.owner_id IS NOT NULL AS reported, "+
+			"alert_destinations.seen_at IS NOT NULL AS seen").
 		Joins("JOIN alert_destinations ON alert_destinations.alert_id = alerts.id").
 		Joins("LEFT JOIN alert_feedback ON alert_feedback.alert_id = alerts.id AND alert_feedback.owner_id = ?", ownerID).
 		Joins("LEFT JOIN alert_reports ON alert_reports.alert_id = alerts.id AND alert_reports.owner_id = ?", ownerID).
@@ -145,6 +147,7 @@ func inboxItemFromRow(row inboxRow) (domain.InboxItem, error) {
 		CreatedAt:      createdAt,
 		RequiresReview: row.RequiresReview,
 		Reported:       row.Reported,
+		Seen:           row.Seen,
 	}
 	if row.ValidatedAt != nil {
 		validatedAt, err := parseCreatedAt(*row.ValidatedAt)

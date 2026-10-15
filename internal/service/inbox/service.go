@@ -46,6 +46,7 @@ type InboxItemDTO struct {
 	EvidenceExpiresAt *time.Time       `json:"evidence_expires_at"`
 	MyFeedback        *domain.Rating   `json:"my_feedback"`
 	Reported          bool             `json:"reported"`
+	Seen              bool             `json:"seen"`
 }
 
 // EvidenceDTO identifica una imagen redactada disponible para el dueño.
@@ -133,6 +134,7 @@ func (s *GetInboxService) toDTO(row domain.InboxItem, now time.Time) InboxItemDT
 		Evidence:       []EvidenceDTO{},
 		MyFeedback:     row.MyFeedback,
 		Reported:       row.Reported,
+		Seen:           row.Seen,
 	}
 
 	if row.ValidatedAt == nil || len(row.Evidence) == 0 {

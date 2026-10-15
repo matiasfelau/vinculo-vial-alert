@@ -123,3 +123,29 @@ func TestNewAlertExpiredEvent_ElEmisorVaEnActorNoEnElPayload(t *testing.T) {
 		t.Error("el emisor no puede figurar en el payload")
 	}
 }
+
+func TestNewAlertSeenEvent_ElEmisorVaEnActorYElPayloadNoRevelaAQuienLeyo(t *testing.T) {
+	issuerID, alertID := uuid.New(), uuid.New()
+
+	event, err := NewAlertSeenEvent(uuid.New(), issuerID, alertID, AlertTypeParkedOnGarage, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if event.EventType != "alert.seen" {
+		t.Errorf("event_type = %q", event.EventType)
+	}
+	if event.Actor == nil || *event.Actor != issuerID {
+		t.Errorf("actor = %v, se esperaba el emisor", event.Actor)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("payload inválido: %v", err)
+	}
+	if len(payload) != 2 || payload["alert_id"] != alertID.String() || payload["alert_type"] != "PARKED_ON_GARAGE" {
+		t.Errorf("payload = %v, se esperaba exactamente { alert_id, alert_type }", payload)
+	}
+	if strings.Contains(string(event.Payload), issuerID.String()) {
+		t.Error("el emisor no puede figurar en el payload")
+	}
+}

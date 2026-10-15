@@ -24,6 +24,8 @@ type mockRepo struct {
 	gotIndex    int
 	feedbackErr error
 	reportErr   error
+	seenErr     error
+	seenCalls   int
 	rating      domain.Rating
 	reason      domain.ReportReason
 }
@@ -204,6 +206,35 @@ func TestReport_DelegaYPropagaLosErrores(t *testing.T) {
 		repo.reportErr = esperado
 		if err := nuevoServicio(repo, &mockStore{}).Report(context.Background(), uuid.New(), uuid.New(), domain.ReportReasonFalseAlert); !errors.Is(err, esperado) {
 			t.Errorf("error = %v, se esperaba %v", err, esperado)
+		}
+	}
+}
+
+func (m *mockRepo) MarkSeen(_ context.Context, _, _ uuid.UUID, _ time.Time) error {
+	m.seenCalls++
+	return m.seenErr
+}
+
+func TestMarkSeen_DelegaEnElRepositorio(t *testing.T) {
+	repo := &mockRepo{}
+
+	if err := nuevoServicio(repo, &mockStore{}).MarkSeen(context.Background(), uuid.New(), uuid.New()); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if repo.seenCalls != 1 {
+		t.Errorf("llamadas = %d, se esperaba 1", repo.seenCalls)
+	}
+}
+
+func TestMarkSeen_PropagaLosErroresDeDominio(t *testing.T) {
+	for _, causa := range []error{domain.ErrAlertNotFound, domain.ErrDatabaseUnavailable} {
+		repo := &mockRepo{seenErr: causa}
+
+		err := nuevoServicio(repo, &mockStore{}).MarkSeen(context.Background(), uuid.New(), uuid.New())
+
+		if !errors.Is(err, causa) {
+			t.Errorf("error = %v, se esperaba que envolviera %v", err, causa)
 		}
 	}
 }
