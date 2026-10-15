@@ -295,7 +295,7 @@ func TestVerdictRepository_Activate_ContextoVencido_ClasificaComoBaseNoDisponibl
 	}
 }
 
-func TestVerdictRepository_Reject_BorraLaAlertaYEncolaAlertRejected(t *testing.T) {
+func TestVerdictRepository_Reject_PasaARejectedYEncolaAlertRejected(t *testing.T) {
 	e, repo := escenarioPendiente(t)
 	originales := clavesDeEvidencia(t, e, domain.EvidenceKindOriginal)
 
@@ -307,11 +307,14 @@ func TestVerdictRepository_Reject_BorraLaAlertaYEncolaAlertRejected(t *testing.T
 	if !resolution.Applied || !reflect.DeepEqual(resolution.OriginalKeys, originales) {
 		t.Errorf("resolución = %+v, se esperaban las claves originales %v para ponerlas en cuarentena", resolution, originales)
 	}
-	if contar(t, e.db, "alerts", "id = ?", e.alert.ID) != 0 {
-		t.Error("la alerta debía borrarse")
+	if contar(t, e.db, "alerts", "id = ?", e.alert.ID) != 1 {
+		t.Fatal("la alerta no debía borrarse: el emisor la sigue viendo en Enviados")
+	}
+	if estado := leerEstado(t, e); estado.status != "REJECTED" {
+		t.Errorf("status = %q, se esperaba REJECTED", estado.status)
 	}
 	if contar(t, e.db, "alert_destinations", "alert_id = ?", e.alert.ID) != 0 || contar(t, e.db, "alert_evidence", "alert_id = ?", e.alert.ID) != 0 {
-		t.Error("destinatarios y evidencia debían borrarse en cascada")
+		t.Error("destinatarios y evidencia debían borrarse")
 	}
 
 	eventos := eventosDeSalida(t, e)

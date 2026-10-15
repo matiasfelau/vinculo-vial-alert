@@ -17,7 +17,7 @@ const (
 	VerdictGreen Verdict = "GREEN"
 	// VerdictYellow activa la alerta y la marca para revisión.
 	VerdictYellow Verdict = "YELLOW"
-	// VerdictRed rechaza la alerta: se borra y se publica alert.rejected.
+	// VerdictRed rechaza la alerta: pasa a REJECTED y se publica alert.rejected.
 	VerdictRed Verdict = "RED"
 )
 
@@ -117,8 +117,9 @@ type VerdictRepository interface {
 	// imágenes redactadas, descarta las filas de los originales y encola
 	// alert.created (actor = emisor, owner_ids de sus destinatarios).
 	Activate(ctx context.Context, result ValidationResult, now time.Time) (Resolution, error)
-	// Reject borra la alerta (con su evidencia y destinatarios, en cascada) y
-	// encola alert.rejected (actor = emisor).
+	// Reject pasa la alerta a REJECTED, borra sus destinatarios y su evidencia,
+	// anula el resultado de la validación y encola alert.rejected (actor =
+	// emisor).
 	Reject(ctx context.Context, result ValidationResult, now time.Time) (Resolution, error)
 	// OwnedRedactedKeys devuelve las claves REDACTED que alguna alerta ya
 	// registró para alertID. Permite distinguir los redactados huérfanos de
