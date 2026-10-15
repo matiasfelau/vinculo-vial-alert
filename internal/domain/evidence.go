@@ -20,6 +20,10 @@ const (
 	AlertStatusActive AlertStatus = "ACTIVE"
 	// AlertStatusExpired es una alerta cuyo veredicto no llegó a tiempo.
 	AlertStatusExpired AlertStatus = "EXPIRED"
+	// AlertStatusRejected es una alerta con veredicto RED. Conserva solo lo que
+	// el emisor puede ver (tipo, fecha y estado): sin destinatarios, evidencia
+	// ni resultado de la validación.
+	AlertStatusRejected AlertStatus = "REJECTED"
 )
 
 // EvidenceRole es el papel de una foto dentro de la evidencia de una alerta.

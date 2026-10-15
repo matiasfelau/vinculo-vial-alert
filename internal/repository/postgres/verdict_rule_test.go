@@ -29,8 +29,8 @@ func TestVerdictRepository_Reject_PayloadLlevaElCodigoRedactionUnavailable(t *te
 	if !resolution.Applied || !reflect.DeepEqual(resolution.OriginalKeys, originales) {
 		t.Errorf("resolución = %+v, se esperaban los originales %v para la cuarentena", resolution, originales)
 	}
-	if contar(t, e.db, "alerts", "id = ?", e.alert.ID) != 0 {
-		t.Error("la alerta debía borrarse, no activarse")
+	if estado := leerEstado(t, e); estado.status != "REJECTED" {
+		t.Errorf("status = %q, la alerta debía quedar REJECTED, no activarse", estado.status)
 	}
 	eventos := eventosDeSalida(t, e)
 	if len(eventos) != 1 || eventos[0].eventType != "alert.rejected" {
@@ -61,7 +61,7 @@ func TestVerdictRepository_Reject_YellowSinRedactadas_EsAtomicoConElOutbox(t *te
 		t.Fatal("se esperaba un error al fallar el outbox")
 	}
 	if estado := leerEstado(t, e); estado.status != "PENDING_VALIDATION" {
-		t.Errorf("status = %q: sin evento publicable la alerta no debe borrarse", estado.status)
+		t.Errorf("status = %q: sin evento publicable la alerta no debe rechazarse", estado.status)
 	}
 	if len(clavesDeEvidencia(t, e, domain.EvidenceKindOriginal)) != 2 || contar(t, e.db, "alert_destinations", "alert_id = ?", e.alert.ID) == 0 {
 		t.Error("la transacción debía revertirse completa: la evidencia y los destinatarios siguen")

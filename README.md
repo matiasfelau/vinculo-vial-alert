@@ -101,11 +101,17 @@ alerta se entrega según la evidencia redactada que trae el evento:
 | GREEN | con o sin imágenes | ACTIVE + `alert.created` |
 | YELLOW | al menos una imagen | ACTIVE (`requires_review`) + `alert.created` |
 | YELLOW | vacío | no se activa ni se emite `alert.created`: se resuelve como un RED sin fraude |
-| RED | no aplica | se borra la alerta + `alert.rejected` |
+| RED | no aplica | la alerta pasa a `REJECTED` + `alert.rejected` |
 
-El YELLOW sin imágenes redactadas borra la alerta (`DELETE ... WHERE status =
-PENDING_VALIDATION`), publica `alert.rejected` con los `reason_codes` de IA más
-`REDACTION_UNAVAILABLE` y deja los originales en cuarentena (`status=quarantine`).
+Un RED no borra la alerta: la pasa a `REJECTED` (`UPDATE ... WHERE status =
+PENDING_VALIDATION`) para que el emisor siga viéndola en Enviados. En la misma
+transacción borra sus destinatarios y sus filas de evidencia, anula
+`verdict`, `reason_codes`, `scores` y `model_versions` y encola `alert.rejected`
+(payload y `actor` sin cambios). Los originales quedan en cuarentena en S3
+(`status=quarantine`) y el buzón del dueño nunca muestra una alerta `REJECTED`.
+
+El YELLOW sin imágenes redactadas sigue ese mismo camino: publica
+`alert.rejected` con los `reason_codes` de IA más `REDACTION_UNAVAILABLE`.
 `REDACTION_UNAVAILABLE` lo agrega solo Alert y no es un código de fraude: no
 penaliza al emisor. La transición es condicional, así que un duplicado o un
 veredicto tardío no cambia nada y no vuelve a publicar.

@@ -296,6 +296,7 @@ func TestInboxRepository_FindByOwner_SoloAlertasActive(t *testing.T) {
 	activa := crearAlertaConEstado(t, db, uuid.New(), domain.AlertTypeCrashed, now, domain.AlertStatusActive, owner)
 	crearAlertaConEstado(t, db, uuid.New(), domain.AlertTypeCrashed, now.Add(time.Second), domain.AlertStatusPendingValidation, owner)
 	crearAlertaConEstado(t, db, uuid.New(), domain.AlertTypeCrashed, now.Add(2*time.Second), domain.AlertStatusExpired, owner)
+	crearAlertaConEstado(t, db, uuid.New(), domain.AlertTypeCrashed, now.Add(3*time.Second), domain.AlertStatusRejected, owner)
 
 	items, err := repo.FindByOwner(context.Background(), owner, nil, 20)
 	if err != nil {

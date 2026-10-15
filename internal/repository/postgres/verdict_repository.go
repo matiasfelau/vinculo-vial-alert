@@ -118,9 +118,13 @@ func (r *VerdictRepository) Activate(ctx context.Context, result domain.Validati
 
 // Reject implementa domain.VerdictRepository para RED.
 //
-// Lee el emisor y las claves de los originales antes de borrar la alerta
-// (el borrado arrastra en cascada destinatarios y evidencia). El DELETE
-// condicional es la barrera de idempotencia, igual que en Activate.
+// La alerta no se borra: pasa a REJECTED para que el emisor siga viendo que
+// existió. En la misma transacción se borran sus destinatarios y toda su
+// evidencia, se anula el resultado de la validación (veredicto, códigos,
+// scores y versiones de modelo) y se encola alert.rejected. El UPDATE
+// condicional es la barrera de idempotencia, igual que en Activate. Las claves
+// de los originales se leen antes de borrar sus filas, para ponerlos en
+// cuarentena en el almacén una vez confirmada la transacción.
 func (r *VerdictRepository) Reject(ctx context.Context, result domain.ValidationResult, now time.Time) (domain.Resolution, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
@@ -129,38 +133,36 @@ func (r *VerdictRepository) Reject(ctx context.Context, result domain.Validation
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolution = domain.Resolution{}
 
-		var summaries []alertSummary
-		err := tx.Table(alertsTable).
-			Select("issuer_id, alert_type").
+		transition := tx.Model(&AlertModel{}).
 			Where("id = ? AND status = ?", result.AlertID, string(domain.AlertStatusPendingValidation)).
-			Scan(&summaries).Error
-		if err != nil {
-			return err
+			Updates(map[string]any{
+				"status":         string(domain.AlertStatusRejected),
+				"verdict":        nil,
+				"reason_codes":   nil,
+				"scores":         nil,
+				"model_versions": nil,
+			})
+		if transition.Error != nil {
+			return transition.Error
 		}
-		if len(summaries) == 0 {
+		if transition.RowsAffected == 0 {
 			return nil
 		}
 
-		var originalKeys []string
-		err = tx.Table("alert_evidence").
-			Where("alert_id = ? AND kind = ?", result.AlertID, string(domain.EvidenceKindOriginal)).
-			Order("s3_key").
-			Pluck("s3_key", &originalKeys).Error
+		summary, err := loadSummary(tx, result.AlertID)
 		if err != nil {
 			return err
 		}
 
-		deleted := tx.
-			Where("id = ? AND status = ?", result.AlertID, string(domain.AlertStatusPendingValidation)).
-			Delete(&AlertModel{})
-		if deleted.Error != nil {
-			return deleted.Error
+		originalKeys, err := dropEvidence(tx, result.AlertID)
+		if err != nil {
+			return err
 		}
-		if deleted.RowsAffected == 0 {
-			return nil
+		if err := tx.Where("alert_id = ?", result.AlertID).Delete(&AlertDestinationModel{}).Error; err != nil {
+			return err
 		}
 
-		event, err := domain.NewAlertRejectedEvent(uuid.New(), summaries[0].IssuerID, result.AlertID, result.ReasonCodes, now)
+		event, err := domain.NewAlertRejectedEvent(uuid.New(), summary.IssuerID, result.AlertID, result.ReasonCodes, now)
 		if err != nil {
 			return fmt.Errorf("error al construir alert.rejected: %w", err)
 		}
@@ -216,23 +218,49 @@ func dropOriginals(tx *gorm.DB, alertID uuid.UUID) ([]string, error) {
 	return keys, nil
 }
 
+// dropEvidence devuelve las claves de los originales cifrados de la alerta y
+// borra todas sus filas de evidencia, originales y redactadas.
+func dropEvidence(tx *gorm.DB, alertID uuid.UUID) ([]string, error) {
+	var keys []string
+	err := tx.Table("alert_evidence").
+		Where("alert_id = ? AND kind = ?", alertID, string(domain.EvidenceKindOriginal)).
+		Order("s3_key").
+		Pluck("s3_key", &keys).Error
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Where("alert_id = ?", alertID).Delete(&AlertEvidenceModel{}).Error; err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// loadSummary lee el emisor y el tipo de la alerta.
+func loadSummary(tx *gorm.DB, alertID uuid.UUID) (alertSummary, error) {
+	var summaries []alertSummary
+	if err := tx.Table(alertsTable).Select("issuer_id, alert_type").Where("id = ?", alertID).Scan(&summaries).Error; err != nil {
+		return alertSummary{}, err
+	}
+	if len(summaries) == 0 {
+		return alertSummary{}, fmt.Errorf("la alerta %s desapareció dentro de la transacción", alertID)
+	}
+	return summaries[0], nil
+}
+
 // loadAlertSummary lee el emisor y el tipo de la alerta, y los dueños que
 // recibirán el aviso.
 func loadAlertSummary(tx *gorm.DB, alertID uuid.UUID) (alertSummary, []uuid.UUID, error) {
-	var summaries []alertSummary
-	if err := tx.Table(alertsTable).Select("issuer_id, alert_type").Where("id = ?", alertID).Scan(&summaries).Error; err != nil {
-		return alertSummary{}, nil, err
-	}
-	if len(summaries) == 0 {
-		return alertSummary{}, nil, fmt.Errorf("la alerta %s desapareció dentro de la transacción", alertID)
-	}
-
-	var owners []uuid.UUID
-	err := tx.Table("alert_destinations").Where("alert_id = ?", alertID).Order("owner_id").Pluck("owner_id", &owners).Error
+	summary, err := loadSummary(tx, alertID)
 	if err != nil {
 		return alertSummary{}, nil, err
 	}
-	return summaries[0], owners, nil
+
+	var owners []uuid.UUID
+	err = tx.Table("alert_destinations").Where("alert_id = ?", alertID).Order("owner_id").Pluck("owner_id", &owners).Error
+	if err != nil {
+		return alertSummary{}, nil, err
+	}
+	return summary, owners, nil
 }
 
 func nonNilCodes(codes []domain.ReasonCode) []domain.ReasonCode {

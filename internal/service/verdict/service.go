@@ -1,6 +1,6 @@
 // Package verdict aplica los veredictos de IA sobre las alertas en
 // PENDING_VALIDATION. Alert es el único que decide las consecuencias: activar
-// y notificar a los dueños, o borrar la alerta y avisar del rechazo.
+// y notificar a los dueños, o pasarla a REJECTED y avisar del rechazo.
 package verdict
 
 import (
@@ -43,7 +43,7 @@ func NewApplyVerdictService(repo domain.VerdictRepository, store domain.Evidence
 // devuelve es transitorio (base caída, timeout) y el mensaje se reintenta.
 //
 // Un YELLOW sin imágenes redactadas se resuelve como RED sin fraude (ver
-// abajo): la transición sigue siendo el DELETE condicional de Reject.
+// abajo): la transición sigue siendo el UPDATE condicional de Reject.
 func (s *ApplyVerdictService) Execute(ctx context.Context, result domain.ValidationResult) error {
 	if result.Verdict == domain.VerdictRed {
 		return s.reject(ctx, result)
