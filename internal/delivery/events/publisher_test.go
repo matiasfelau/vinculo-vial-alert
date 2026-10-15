@@ -35,7 +35,7 @@ func (m *mockChannel) PublishAndConfirm(ctx context.Context, exchange, key strin
 
 func nuevoEventoAlertCreated(t *testing.T, issuerID uuid.UUID, owners ...uuid.UUID) domain.OutboxEvent {
 	t.Helper()
-	event, err := domain.NewAlertCreatedEvent(uuid.New(), issuerID, domain.AlertTypeCrashed, owners, time.Now().UTC())
+	event, err := domain.NewAlertCreatedEvent(uuid.New(), issuerID, uuid.New(), domain.AlertTypeCrashed, owners, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("no se pudo construir el evento: %v", err)
 	}
@@ -105,6 +105,12 @@ func TestPublisher_Publish_RespetaEnvelopeEstandar(t *testing.T) {
 	}
 	if payload["alert_type"] != string(domain.AlertTypeCrashed) {
 		t.Errorf("payload.alert_type = %v, se esperaba %q", payload["alert_type"], domain.AlertTypeCrashed)
+	}
+	if id, ok := payload["alert_id"].(string); !ok || id == "" || id == uuid.Nil.String() {
+		t.Errorf("payload.alert_id = %v, se esperaba el id de la alerta", payload["alert_id"])
+	}
+	if len(payload) != 3 {
+		t.Errorf("payload = %v, se esperaban exactamente owner_ids, alert_type y alert_id", payload)
 	}
 }
 

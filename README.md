@@ -179,7 +179,7 @@ viaja solo en `actor`, nunca en el payload.
 | `eventType` | `actor` | Payload |
 |---|---|---|
 | `alert.evidence.uploaded` | `null` | `{ alert_id, alert_type, pat_enc_ia, bucket, evidence }` |
-| `alert.created` | emisor | `{ owner_ids, alert_type }` |
+| `alert.created` | emisor | `{ owner_ids, alert_type, alert_id }` |
 | `alert.rejected` | emisor | `{ alert_id, reason_codes }` |
 | `alert.expired` | emisor | `{ alert_id, alert_type }` |
 | `alert.seen` | emisor | `{ alert_id, alert_type }` |

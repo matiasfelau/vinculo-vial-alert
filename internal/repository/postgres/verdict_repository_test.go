@@ -200,6 +200,9 @@ func TestVerdictRepository_Activate_EncolaAlertCreatedConLosMismosDuenosYElEmiso
 	if !reflect.DeepEqual(payload.OwnerIDs, esperados) || payload.AlertType != domain.AlertTypeCrashed {
 		t.Errorf("payload = %+v, se esperaban los mismos owner_ids del intento %v", payload, esperados)
 	}
+	if payload.AlertID != e.alert.ID {
+		t.Errorf("alert_id = %v, se esperaba el de la alerta activada %v", payload.AlertID, e.alert.ID)
+	}
 	if strings.Contains(eventos[0].payload, e.alert.IssuerID.String()) {
 		t.Error("el emisor no puede figurar en el payload")
 	}
