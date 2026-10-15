@@ -182,6 +182,7 @@ type mockOwnerRepo struct {
 	err        error
 	feedback   map[uuid.UUID]domain.Rating
 	reports    map[uuid.UUID]domain.ReportReason
+	seen       map[uuid.UUID]int
 }
 
 func (m *mockOwnerRepo) FindEvidence(_ context.Context, _, ownerID uuid.UUID, _ domain.EvidenceRole, _ int) (domain.EvidenceAccess, error) {
@@ -262,8 +263,25 @@ func (d *testDeps) router() *gin.Engine {
 		NewAttemptHandler(attemptService, retryAfterDePrueba),
 		NewOwnerHandler(owner.NewService(d.owner, d.store, testRetention), retryAfterDePrueba),
 		NewInboxHandler(inbox.NewGetInboxService(&mockInboxRepo{}, testRetention)),
+		NewSentHandler(nil),
 		NewHealthHandler(),
 		NewReadyHandler(&mockDBPinger{}),
 		NewDepsHandler(&mockRabbitMQHealthChecker{healthy: true}, &mockOutboxWorkerHealthChecker{healthy: true}),
 	)
+}
+
+func (m *mockOwnerRepo) MarkSeen(_ context.Context, _, ownerID uuid.UUID, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	if !m.recipients[ownerID] {
+		return domain.ErrAlertNotFound
+	}
+	if m.seen == nil {
+		m.seen = map[uuid.UUID]int{}
+	}
+	m.seen[ownerID]++
+	return nil
 }

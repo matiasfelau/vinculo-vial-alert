@@ -108,6 +108,26 @@ func (h *OwnerHandler) PutFeedback(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// PutSeen implementa PUT /api/v1/alerts/{alert_id}/seen: el destinatario avisa
+// que abrió el chat. Es idempotente y no lleva body. Una alerta que no está
+// ACTIVE, ajena o inexistente responde el mismo 404.
+func (h *OwnerHandler) PutSeen(c *gin.Context) {
+	ownerID, ok := authenticatedUser(c)
+	if !ok {
+		return
+	}
+	alertID, ok := parseAlertID(c)
+	if !ok {
+		return
+	}
+
+	if err := h.service.MarkSeen(c.Request.Context(), ownerID, alertID); err != nil {
+		h.respondFailure(c, ownerID, alertID, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // PostReport implementa POST /api/v1/alerts/{alert_id}/report.
 func (h *OwnerHandler) PostReport(c *gin.Context) {
 	ownerID, ok := authenticatedUser(c)

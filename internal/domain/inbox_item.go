@@ -30,8 +30,8 @@ type InboxEvidence struct {
 //
 // Evidence trae únicamente las imágenes redactadas registradas, sin importar
 // la retención: aplicarla es del caso de uso, a partir de ValidatedAt.
-// MyFeedback y Reported son los del destinatario que consulta, nunca los de
-// otro dueño.
+// MyFeedback, Reported y Seen son los del destinatario que consulta, nunca los
+// de otro dueño.
 type InboxItem struct {
 	ID             uuid.UUID
 	AlertType      AlertType
@@ -41,4 +41,5 @@ type InboxItem struct {
 	ValidatedAt    *time.Time
 	MyFeedback     *Rating
 	Reported       bool
+	Seen           bool
 }
