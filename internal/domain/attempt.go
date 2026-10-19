@@ -7,18 +7,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Attempt es el intento de alerta de un emisor: el resultado de resolver los
-// dueños de una patente, guardado con un TTL hasta que el emisor completa la
-// alerta con la evidencia. Hay un único intento activo por emisor: cada
-// intento nuevo reemplaza al anterior. ID se convierte en el alert_id.
+// Attempt es el intento de alerta de un emisor: un id con TTL que se guarda
+// hasta que el emisor completa la alerta con la evidencia. Hay un único
+// intento activo por emisor: cada intento nuevo reemplaza al anterior. ID se
+// convierte en el alert_id y es el info del HPKE de las fotos.
 //
-// No contiene la patente ni su criptograma pat_enc. PatEncIA es el criptograma
-// hacia IA que generó Vehicle; Alert no puede leerlo.
+// El intento no sabe nada del vehículo: no contiene la patente, su criptograma
+// ni los dueños. Los dueños se resuelven recién al enviar la alerta.
 type Attempt struct {
 	ID        uuid.UUID
 	IssuerID  uuid.UUID
-	OwnerIDs  []uuid.UUID
-	PatEncIA  string
 	ExpiresAt time.Time
 	CreatedAt time.Time
 }

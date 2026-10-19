@@ -14,7 +14,6 @@ import (
 
 	"vinculo-vial-alert/internal/circuitbreaker"
 	"vinculo-vial-alert/internal/client/storage"
-	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
@@ -74,12 +73,6 @@ func main() {
 	restrictionRepo := repopostgres.NewRestrictionRepository(db)
 	inboxRepo := repopostgres.NewInboxRepository(db)
 	outboxRepo := repopostgres.NewOutboxRepository(db)
-	vehicleClient := vehicle.NewClient(cfg.VehicleInternalURL, cfg.VehicleTimeout, cfg.InternalServiceToken)
-	vehicleBreaker := circuitbreaker.New(circuitbreaker.Config{
-		FailureThreshold: cfg.VehicleBreakerFailureThreshold,
-		OpenDuration:     cfg.VehicleBreakerOpenDuration,
-	})
-	vehicleResolver := vehicle.NewBreakerResolver(vehicleClient, vehicleBreaker)
 	publisher := deliveryevents.NewPublisher(rabbitConn, cfg.RabbitMQExchange, cfg.RabbitMQPublishTimeout)
 
 	// El worker de outbox publica en background: CreateAlertService ya no
@@ -148,7 +141,7 @@ func main() {
 	}()
 
 	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout)
-	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, vehicleResolver, attemptRepo, cfg.AttemptTTL)
+	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo, cfg.EvidenceRetention)
 	ownerService := ownersvc.NewService(repopostgres.NewOwnerRepository(db), evidenceStore, cfg.EvidenceRetention)
 	alertHandler := deliveryhttp.NewAlertHandler(service, cfg.EvidenceMaxPartBytes, cfg.RetryAfter)

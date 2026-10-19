@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -13,15 +12,12 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-// AttemptModel es la representación GORM de la tabla alert_attempts. No
-// guarda la patente ni pat_enc: solo los dueños resueltos y el criptograma
-// hacia IA, que Alert no puede leer. issuer_id es único: un intento activo por
-// usuario.
+// AttemptModel es la representación GORM de la tabla alert_attempts. Solo
+// guarda quién es el emisor y cuándo vence: ni la patente ni los dueños.
+// issuer_id es único: un intento activo por usuario.
 type AttemptModel struct {
 	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
 	IssuerID  uuid.UUID `gorm:"type:uuid;not null;uniqueIndex"`
-	OwnerIDs  string    `gorm:"column:owner_ids;type:jsonb;not null"`
-	PatEncIA  string    `gorm:"column:pat_enc_ia;type:text;not null"`
 	ExpiresAt time.Time `gorm:"type:timestamptz;not null;index"`
 	CreatedAt time.Time `gorm:"type:timestamptz;not null"`
 }
@@ -50,14 +46,15 @@ func (r *AttemptRepository) Upsert(ctx context.Context, attempt *domain.Attempt)
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
-	model, err := attemptToModel(attempt)
-	if err != nil {
-		return fmt.Errorf("attempt repository: %w", err)
+	model := AttemptModel{
+		ID:        attempt.ID,
+		IssuerID:  attempt.IssuerID,
+		ExpiresAt: attempt.ExpiresAt,
+		CreatedAt: attempt.CreatedAt,
 	}
-
-	err = r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "issuer_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"id", "owner_ids", "pat_enc_ia", "expires_at", "created_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"id", "expires_at", "created_at"}),
 	}).Create(&model).Error
 	return classifyDBError(err)
 }
@@ -67,8 +64,6 @@ func (r *AttemptRepository) Upsert(ctx context.Context, attempt *domain.Attempt)
 type attemptRow struct {
 	ID        uuid.UUID `gorm:"column:id"`
 	IssuerID  uuid.UUID `gorm:"column:issuer_id"`
-	OwnerIDs  string    `gorm:"column:owner_ids"`
-	PatEncIA  string    `gorm:"column:pat_enc_ia"`
 	ExpiresAt string    `gorm:"column:expires_at"`
 	CreatedAt string    `gorm:"column:created_at"`
 }
@@ -82,7 +77,7 @@ func (r *AttemptRepository) Get(ctx context.Context, id, issuerID uuid.UUID) (*d
 	var rows []attemptRow
 	err := r.db.WithContext(ctx).
 		Table("alert_attempts").
-		Select("id, issuer_id, owner_ids, pat_enc_ia, expires_at, created_at").
+		Select("id, issuer_id, expires_at, created_at").
 		Where("id = ? AND issuer_id = ?", id, issuerID).
 		Limit(1).
 		Scan(&rows).Error
@@ -101,19 +96,6 @@ func (r *AttemptRepository) Get(ctx context.Context, id, issuerID uuid.UUID) (*d
 }
 
 func attemptFromRow(row attemptRow) (*domain.Attempt, error) {
-	var rawOwnerIDs []string
-	if err := json.Unmarshal([]byte(row.OwnerIDs), &rawOwnerIDs); err != nil {
-		return nil, fmt.Errorf("owner_ids con formato inesperado: %w", err)
-	}
-	ownerIDs := make([]uuid.UUID, len(rawOwnerIDs))
-	for i, raw := range rawOwnerIDs {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			return nil, fmt.Errorf("owner_id no parseable: %w", err)
-		}
-		ownerIDs[i] = id
-	}
-
 	expiresAt, err := parseCreatedAt(row.ExpiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("expires_at con formato inesperado: %w", err)
@@ -126,29 +108,7 @@ func attemptFromRow(row attemptRow) (*domain.Attempt, error) {
 	return &domain.Attempt{
 		ID:        row.ID,
 		IssuerID:  row.IssuerID,
-		OwnerIDs:  ownerIDs,
-		PatEncIA:  row.PatEncIA,
 		ExpiresAt: expiresAt.UTC(),
 		CreatedAt: createdAt.UTC(),
-	}, nil
-}
-
-func attemptToModel(attempt *domain.Attempt) (AttemptModel, error) {
-	ownerIDs := make([]string, len(attempt.OwnerIDs))
-	for i, id := range attempt.OwnerIDs {
-		ownerIDs[i] = id.String()
-	}
-	encoded, err := json.Marshal(ownerIDs)
-	if err != nil {
-		return AttemptModel{}, fmt.Errorf("error al serializar owner_ids: %w", err)
-	}
-
-	return AttemptModel{
-		ID:        attempt.ID,
-		IssuerID:  attempt.IssuerID,
-		OwnerIDs:  string(encoded),
-		PatEncIA:  attempt.PatEncIA,
-		ExpiresAt: attempt.ExpiresAt,
-		CreatedAt: attempt.CreatedAt,
 	}, nil
 }

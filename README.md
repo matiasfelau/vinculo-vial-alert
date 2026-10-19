@@ -1,11 +1,11 @@
 # vinculo-vial-alert
 
 Servicio de alertas del sistema Vínculo Vial. Crear una alerta es un flujo
-en dos llamadas: `POST /api/v1/alerts/attempts` resuelve los dueños del
-vehículo a través de `vinculo-vial-vehicle` sin descifrar la patente y
-guarda un intento con TTL; `POST /api/v1/alerts` (multipart) consume ese
-intento, sube las fotos cifradas a AWS S3 sin poder leerlas y registra la
-alerta en `PENDING_VALIDATION`. El evento `alert.evidence.uploaded` se
+en dos llamadas: `POST /api/v1/alerts/attempts` controla que el emisor no esté
+en revisión y guarda un intento con TTL (solo un id, sin consultar el
+vehículo); `POST /api/v1/alerts` (multipart) consume ese intento, sube las
+fotos cifradas a AWS S3 sin poder leerlas y registra la alerta en
+`PENDING_VALIDATION`. El evento `alert.evidence.uploaded` se
 persiste en la misma transacción que la alerta (patrón transactional
 outbox) y un worker en background lo publica en RabbitMQ: la creación de
 la alerta no depende de que el broker esté disponible en ese momento.
@@ -90,6 +90,26 @@ El servicio sigue Clean Architecture:
 ```
 
 La capa `domain` no depende de frameworks ni librerías externas.
+
+## Intento de alerta (US-10)
+
+`POST /api/v1/alerts/attempts` no lleva body: un `pat_enc` que llegue de un
+cliente viejo se ignora. Solo hace dos cosas: si el emisor está en
+`issuer_restrictions` con `UNDER_REVIEW` responde `403 ISSUER_UNDER_REVIEW`; si
+no, genera el `attempt_id` (futuro `alert_id` e `info` del HPKE de las fotos),
+lo guarda con TTL (`ATTEMPT_TTL_SECONDS`, un intento activo por emisor) y
+responde `201 { attempt_id, expires_at }`.
+
+El intento ya no consulta a Vehicle ni guarda `owner_ids` ni `pat_enc_ia`, y
+desaparecieron `404 NOT_IN_NETWORK` y `ErrNotInNetwork`: el emisor nunca se
+entera de si el vehículo tiene dueños, y el sistema nunca le dice algo falso.
+Los dueños se resuelven al enviar la alerta (`POST /alerts`), no acá. La
+migración borra las columnas `owner_ids` y `pat_enc_ia` de `alert_attempts` y
+conserva los intentos vigentes.
+
+Mientras la resolución en el envío no esté mergeada, `POST /alerts` crea la
+alerta sin destinatarios y sin `pat_enc_ia`: esta rama solo se debe desplegar
+junto con `feature/us10-resolucion-en-envio`.
 
 ## Regla de entrega según evidencia
 
