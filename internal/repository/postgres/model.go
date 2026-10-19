@@ -25,6 +25,10 @@ type AlertModel struct {
 	Scores        *string    `gorm:"type:jsonb"`
 	ModelVersions *string    `gorm:"column:model_versions;type:jsonb"`
 	ValidatedAt   *time.Time `gorm:"column:validated_at;type:timestamptz"`
+
+	// SeenAt es cuándo el primer destinatario abrió el chat. Lo conoce el
+	// emisor (sabe cuándo, nunca quién); es nulo hasta la primera lectura.
+	SeenAt *time.Time `gorm:"column:seen_at;type:timestamptz"`
 }
 
 // TableName fija el nombre de tabla explícito.
@@ -40,10 +44,13 @@ func (AlertModel) TableName() string {
 // figurar dos veces como destinatario de la misma alerta. Sin esa garantía,
 // el JOIN del inbox devolvería la alerta duplicada para ese destinatario.
 type AlertDestinationModel struct {
-	ID      uuid.UUID  `gorm:"type:uuid;primaryKey"`
-	AlertID uuid.UUID  `gorm:"type:uuid;not null;uniqueIndex:idx_alert_destinations_owner_alert,priority:2"`
-	OwnerID uuid.UUID  `gorm:"type:uuid;not null;uniqueIndex:idx_alert_destinations_owner_alert,priority:1"`
-	Alert   AlertModel `gorm:"foreignKey:AlertID;references:ID;constraint:OnDelete:CASCADE"`
+	ID      uuid.UUID `gorm:"type:uuid;primaryKey"`
+	AlertID uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_alert_destinations_owner_alert,priority:2"`
+	OwnerID uuid.UUID `gorm:"type:uuid;not null;uniqueIndex:idx_alert_destinations_owner_alert,priority:1"`
+	// SeenAt es cuándo este destinatario abrió el chat. Es un dato del propio
+	// dueño: nunca se expone a otros destinatarios ni al emisor.
+	SeenAt *time.Time `gorm:"column:seen_at;type:timestamptz"`
+	Alert  AlertModel `gorm:"foreignKey:AlertID;references:ID;constraint:OnDelete:CASCADE"`
 }
 
 // TableName fija el nombre de tabla explícito.

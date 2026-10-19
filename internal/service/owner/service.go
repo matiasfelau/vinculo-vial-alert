@@ -1,7 +1,8 @@
 // Package owner orquesta lo que un destinatario puede hacer con una alerta
-// ACTIVE: ver la evidencia redactada, valorar la validación y reportar al
-// emisor. Todas las operaciones comparten la misma autorización: la alerta
-// está ACTIVE y el usuario figura en alert_destinations.
+// ACTIVE: ver la evidencia redactada, valorar la validación, reportar al
+// emisor y marcar la alerta como leída. Todas comparten la misma
+// autorización: la alerta está ACTIVE y el usuario figura en
+// alert_destinations.
 package owner
 
 import (
@@ -73,6 +74,17 @@ func (s *Service) GetEvidence(ctx context.Context, ownerID, alertID uuid.UUID, r
 func (s *Service) SubmitFeedback(ctx context.Context, ownerID, alertID uuid.UUID, rating domain.Rating) error {
 	if err := s.repo.UpsertFeedback(ctx, alertID, ownerID, rating, s.now()); err != nil {
 		return fmt.Errorf("owner service: error al guardar la valoración: %w", err)
+	}
+	return nil
+}
+
+// MarkSeen registra que el dueño abrió el chat de la alerta. Es idempotente:
+// repetirlo no cambia nada ni publica de nuevo. Devuelve
+// domain.ErrAlertNotFound si la alerta no está ACTIVE o el usuario no es
+// destinatario.
+func (s *Service) MarkSeen(ctx context.Context, ownerID, alertID uuid.UUID) error {
+	if err := s.repo.MarkSeen(ctx, alertID, ownerID, s.now()); err != nil {
+		return fmt.Errorf("owner service: error al registrar la lectura: %w", err)
 	}
 	return nil
 }

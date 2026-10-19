@@ -219,3 +219,26 @@ func TestInboxPageDTO_ItemsVacio_SerializaComoArregloVacioNoNull(t *testing.T) {
 		t.Errorf("JSON = %s, se esperaba {\"items\":[],\"next_cursor\":null}", raw)
 	}
 }
+
+func TestExecute_Seen_EsElDelDestinatarioYSerializaComoBooleano(t *testing.T) {
+	repo := &mockInboxRepo{items: []domain.InboxItem{
+		{ID: uuid.New(), AlertType: domain.AlertTypeCrashed, CreatedAt: time.Now().UTC(), Seen: true},
+		{ID: uuid.New(), AlertType: domain.AlertTypeCrashed, CreatedAt: time.Now().UTC()},
+	}}
+
+	page, err := NewGetInboxService(repo, testRetention).Execute(context.Background(), GetInboxInput{OwnerID: uuid.New()})
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if !page.Items[0].Seen || page.Items[1].Seen {
+		t.Errorf("seen = %v/%v, se esperaba true/false", page.Items[0].Seen, page.Items[1].Seen)
+	}
+	body, err := json.Marshal(page)
+	if err != nil {
+		t.Fatalf("no se pudo serializar: %v", err)
+	}
+	if !strings.Contains(string(body), `"seen":true`) || !strings.Contains(string(body), `"seen":false`) {
+		t.Errorf("body = %s, cada ítem debía llevar seen como booleano", body)
+	}
+}

@@ -134,6 +134,9 @@ func TestAutoMigrate_OutboxViejo_ConvierteLasFilasPendientesSinPerderEventos(t *
 		if _, existe := mapaDe(t, got.Payload)["issuer_id"]; existe {
 			t.Errorf("evento %d: el payload no debe contener issuer_id", i)
 		}
+		if _, existe := mapaDe(t, got.Payload)["alert_id"]; existe {
+			t.Errorf("evento %d: las filas viejas se publican con el mismo payload que antes, sin alert_id", i)
+		}
 	}
 
 	// Estado y contadores se conservan: la fila enviada no vuelve a pendiente

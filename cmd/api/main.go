@@ -24,6 +24,7 @@ import (
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
 	ownersvc "vinculo-vial-alert/internal/service/owner"
 	restrictionsvc "vinculo-vial-alert/internal/service/restriction"
+	sentsvc "vinculo-vial-alert/internal/service/sent"
 	sweepersvc "vinculo-vial-alert/internal/service/sweeper"
 	verdictsvc "vinculo-vial-alert/internal/service/verdict"
 	"vinculo-vial-alert/pkg/config"
@@ -139,7 +140,7 @@ func main() {
 			})
 	}()
 
-	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention)
+	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention, cfg.SentRetention)
 	sweeperDone := make(chan struct{})
 	go func() {
 		defer close(sweeperDone)
@@ -154,6 +155,8 @@ func main() {
 	attemptHandler := deliveryhttp.NewAttemptHandler(attemptService, cfg.RetryAfter)
 	ownerHandler := deliveryhttp.NewOwnerHandler(ownerService, cfg.RetryAfter)
 	inboxHandler := deliveryhttp.NewInboxHandler(inboxService)
+	sentService := sentsvc.NewGetSentService(repopostgres.NewSentRepository(db), cfg.SentRetention)
+	sentHandler := deliveryhttp.NewSentHandler(sentService)
 	healthHandler := deliveryhttp.NewHealthHandler()
 	depsHandler := deliveryhttp.NewDepsHandler(rabbitConn, outboxWorker,
 		deliveryhttp.DependencyCheck{Name: "s3", Healthy: evidenceStore.Healthy},
@@ -161,7 +164,7 @@ func main() {
 		deliveryhttp.DependencyCheck{Name: "user_status_consumer", Healthy: userStatusStatus.Connected},
 	)
 	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
-	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, ownerHandler, inboxHandler, healthHandler, readyHandler, depsHandler)
+	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, ownerHandler, inboxHandler, sentHandler, healthHandler, readyHandler, depsHandler)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,

@@ -37,19 +37,27 @@ func visibleAlerts(tx *gorm.DB, alertID, ownerID uuid.UUID) *gorm.DB {
 			alertID, string(domain.AlertStatusActive), ownerID)
 }
 
+// visibleSummary devuelve el emisor y el tipo de una alerta visible para
+// ownerID, o domain.ErrAlertNotFound.
+func visibleSummary(tx *gorm.DB, alertID, ownerID uuid.UUID) (alertSummary, error) {
+	var rows []alertSummary
+	if err := visibleAlerts(tx, alertID, ownerID).Select("alerts.issuer_id AS issuer_id, alerts.alert_type AS alert_type").Scan(&rows).Error; err != nil {
+		return alertSummary{}, err
+	}
+	if len(rows) == 0 {
+		return alertSummary{}, domain.ErrAlertNotFound
+	}
+	return rows[0], nil
+}
+
 // issuerOf devuelve el emisor de una alerta visible para ownerID, o
 // domain.ErrAlertNotFound.
 func issuerOf(tx *gorm.DB, alertID, ownerID uuid.UUID) (uuid.UUID, error) {
-	var rows []struct {
-		IssuerID uuid.UUID `gorm:"column:issuer_id"`
-	}
-	if err := visibleAlerts(tx, alertID, ownerID).Select("alerts.issuer_id").Scan(&rows).Error; err != nil {
+	summary, err := visibleSummary(tx, alertID, ownerID)
+	if err != nil {
 		return uuid.Nil, err
 	}
-	if len(rows) == 0 {
-		return uuid.Nil, domain.ErrAlertNotFound
-	}
-	return rows[0].IssuerID, nil
+	return summary.IssuerID, nil
 }
 
 type evidenceAccessRow struct {
@@ -102,6 +110,49 @@ func (r *OwnerRepository) UpsertFeedback(ctx context.Context, alertID, ownerID u
 			Columns:   []clause.Column{{Name: "alert_id"}, {Name: "owner_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"rating", "updated_at"}),
 		}).Create(&feedback).Error
+	})
+	return classifyDBError(err)
+}
+
+// MarkSeen implementa domain.OwnerAlertRepository. Los dos UPDATE son
+// condicionales a seen_at IS NULL: el del destinatario hace idempotente la
+// llamada y el de la alerta es la barrera del evento. Con llamadas
+// concurrentes de distintos dueños, el segundo UPDATE de la alerta espera el
+// lock del primero y, al reevaluar su WHERE, no afecta ninguna fila: un solo
+// alert.seen.
+func (r *OwnerRepository) MarkSeen(ctx context.Context, alertID, ownerID uuid.UUID, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		summary, err := visibleSummary(tx, alertID, ownerID)
+		if err != nil {
+			return err
+		}
+
+		err = tx.Model(&AlertDestinationModel{}).
+			Where("alert_id = ? AND owner_id = ? AND seen_at IS NULL", alertID, ownerID).
+			Update("seen_at", now).Error
+		if err != nil {
+			return err
+		}
+
+		first := tx.Model(&AlertModel{}).
+			Where("id = ? AND status = ? AND seen_at IS NULL", alertID, string(domain.AlertStatusActive)).
+			Update("seen_at", now)
+		if first.Error != nil {
+			return first.Error
+		}
+		if first.RowsAffected == 0 {
+			return nil
+		}
+
+		event, err := domain.NewAlertSeenEvent(uuid.New(), summary.IssuerID, alertID, domain.AlertType(summary.AlertType), now)
+		if err != nil {
+			return fmt.Errorf("error al construir alert.seen: %w", err)
+		}
+		outbox := outboxEventToModel(&event)
+		return tx.Create(&outbox).Error
 	})
 	return classifyDBError(err)
 }
