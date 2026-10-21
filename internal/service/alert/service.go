@@ -103,6 +103,14 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	alertID := attempt.ID
 	evidence, refs := s.describeEvidence(alertID, input.Files, now)
 
+	// El intento ya no trae los dueños ni pat_enc_ia (US-10): se resuelven al
+	// enviar la alerta, con el pat_enc del metadata. Hasta que ese paso exista,
+	// la alerta se crea sin destinatarios y sin criptograma hacia IA.
+	var (
+		owners   []uuid.UUID
+		patEncIA string
+	)
+
 	if err := s.uploadOriginals(ctx, evidence, input.Files); err != nil {
 		var inUse *attemptInUseError
 		if errors.As(err, &inUse) {
@@ -119,7 +127,7 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	event, err := domain.NewEvidenceUploadedEvent(uuid.New(), domain.EvidenceUploadedPayload{
 		AlertID:   alertID,
 		AlertType: input.AlertType,
-		PatEncIA:  attempt.PatEncIA,
+		PatEncIA:  patEncIA,
 		Bucket:    s.bucket,
 		Evidence:  refs,
 	}, now)
@@ -135,7 +143,7 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 		Status:    domain.AlertStatusPendingValidation,
 		CreatedAt: now,
 	}
-	if err := s.alerts.CreatePending(ctx, now, alertRow, attempt.OwnerIDs, evidence, event); err != nil {
+	if err := s.alerts.CreatePending(ctx, now, alertRow, owners, evidence, event); err != nil {
 		s.cleanupAfterFailedCreate(ctx, alertID, evidence, err)
 		if errors.Is(err, domain.ErrAttemptExpired) {
 			return CreateAlertResult{}, domain.ErrAttemptExpired

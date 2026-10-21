@@ -43,7 +43,4 @@ func TestEmisorEnRevision_BloqueaLaCreacionPeroNoElBuzonNiLasOperacionesDelDueno
 			t.Errorf("code = %q, se esperaba ISSUER_UNDER_REVIEW", code)
 		}
 	}
-	if deps.resolver.called {
-		t.Error("un emisor en revisión no debe disparar la consulta a Vehicle")
-	}
 }

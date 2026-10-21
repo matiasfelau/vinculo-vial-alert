@@ -104,8 +104,6 @@ func depsConIntento(t *testing.T, issuerID uuid.UUID) (*testDeps, uuid.UUID) {
 		attemptID: {
 			ID:        attemptID,
 			IssuerID:  issuerID,
-			OwnerIDs:  []uuid.UUID{uuid.New()},
-			PatEncIA:  "Y3JpcHRvZ3JhbWE=",
 			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
 			CreatedAt: time.Now().UTC(),
 		},

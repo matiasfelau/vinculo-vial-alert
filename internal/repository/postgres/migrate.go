@@ -12,6 +12,7 @@ import (
 
 const (
 	alertsTable         = "alerts"
+	attemptsTable       = "alert_attempts"
 	outboxTable         = "outbox_events"
 	outboxBackfillBatch = 500
 )
@@ -41,7 +42,39 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := migrateAlertStatus(db); err != nil {
 		return fmt.Errorf("migración del estado de las alertas: %w", err)
 	}
+	if err := migrateAttemptsWithoutResolution(db); err != nil {
+		return fmt.Errorf("migración del intento sin resolución: %w", err)
+	}
 	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &AlertEvidenceModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{}, &AlertFeedbackModel{}, &AlertReportModel{})
+}
+
+// legacyAttemptColumns son las columnas del intento con resolución de dueños
+// (US-08): owner_ids y pat_enc_ia, ambas NOT NULL. El intento ya no las
+// guarda; AutoMigrate nunca borra columnas, y dejarlas haría fallar todo
+// INSERT del intento nuevo por la restricción NOT NULL.
+var legacyAttemptColumns = []string{"owner_ids", "pat_enc_ia"}
+
+// migrateAttemptsWithoutResolution borra de alert_attempts las columnas del
+// intento con resolución. Los intentos vigentes se conservan (id, emisor y
+// vencimiento): solo viven hasta ATTEMPT_TTL_SECONDS. Si la tabla no existe o
+// ya no tiene las columnas, no hace nada, así que es idempotente.
+func migrateAttemptsWithoutResolution(db *gorm.DB) error {
+	migrator := db.Migrator()
+	if !migrator.HasTable(attemptsTable) {
+		return nil
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, column := range legacyAttemptColumns {
+			if !tx.Migrator().HasColumn(attemptsTable, column) {
+				continue
+			}
+			if err := tx.Exec("ALTER TABLE " + attemptsTable + " DROP COLUMN " + column).Error; err != nil {
+				return fmt.Errorf("borrar la columna %s: %w", column, err)
+			}
+		}
+		return nil
+	})
 }
 
 // migrateAlertStatus agrega alerts.status a una tabla que todavía no lo

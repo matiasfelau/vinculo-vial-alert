@@ -73,20 +73,6 @@ func (m *mockAttempts) Get(_ context.Context, id, issuerID uuid.UUID) (*domain.A
 	return found, nil
 }
 
-// resolverDePrueba devuelve lo configurado y registra el alert_id recibido.
-type resolverDePrueba struct {
-	resolved domain.ResolvedOwners
-	err      error
-	called   bool
-	alertID  uuid.UUID
-}
-
-func (m *resolverDePrueba) ResolveOwners(_ context.Context, _ string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
-	m.called = true
-	m.alertID = alertID
-	return m.resolved, m.err
-}
-
 // mockAlerts modela el consumo del intento: la primera CreatePending de cada
 // alerta gana y las siguientes reciben ErrAttemptExpired.
 type mockAlerts struct {
@@ -233,7 +219,6 @@ func (m *mockOwnerRepo) CreateReport(_ context.Context, _, ownerID uuid.UUID, re
 // testDeps agrupa los dobles con los que se arma el router completo.
 type testDeps struct {
 	restrictions *mockRestrictions
-	resolver     *resolverDePrueba
 	attempts     *mockAttempts
 	alerts       *mockAlerts
 	store        *mockStore
@@ -243,21 +228,17 @@ type testDeps struct {
 func nuevasDeps() *testDeps {
 	return &testDeps{
 		restrictions: &mockRestrictions{},
-		resolver: &resolverDePrueba{resolved: domain.ResolvedOwners{
-			OwnerIDs: []uuid.UUID{uuid.New()},
-			PatEncIA: "Y3JpcHRvZ3JhbWE=",
-		}},
-		attempts: &mockAttempts{},
-		alerts:   &mockAlerts{},
-		store:    &mockStore{},
-		owner:    &mockOwnerRepo{},
+		attempts:     &mockAttempts{},
+		alerts:       &mockAlerts{},
+		store:        &mockStore{},
+		owner:        &mockOwnerRepo{},
 	}
 }
 
 func (d *testDeps) router() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	alertService := alert.NewCreateAlertService(d.restrictions, d.attempts, d.alerts, d.store, testBucket, time.Second)
-	attemptService := attempt.NewCreateAttemptService(d.restrictions, d.resolver, d.attempts, 10*time.Minute)
+	attemptService := attempt.NewCreateAttemptService(d.restrictions, d.attempts, 10*time.Minute)
 	return NewRouter(
 		NewAlertHandler(alertService, testMaxPartBytes, retryAfterDePrueba),
 		NewAttemptHandler(attemptService, retryAfterDePrueba),

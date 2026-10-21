@@ -37,10 +37,6 @@ var ErrInvalidPlateCryptogram = errors.New("el criptograma o el formato de la pa
 // (issuer_restrictions) y no puede crear alertas. El handler lo mapea a 403.
 var ErrIssuerUnderReview = errors.New("el emisor está en revisión")
 
-// ErrNotInNetwork indica que la patente no pertenece a ningún dueño distinto
-// del emisor: no hay a quién avisar. El handler lo mapea a 404.
-var ErrNotInNetwork = errors.New("el vehículo no está en la red")
-
 // ErrAttemptNotFound indica que el intento no existe o pertenece a otro
 // usuario; no se distingue. El handler lo mapea a 404.
 var ErrAttemptNotFound = errors.New("el intento no existe")

@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -13,13 +12,11 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-func nuevoIntento(issuerID uuid.UUID, owners ...uuid.UUID) *domain.Attempt {
+func nuevoIntento(issuerID uuid.UUID) *domain.Attempt {
 	now := time.Now().UTC().Truncate(time.Second)
 	return &domain.Attempt{
 		ID:        uuid.New(),
 		IssuerID:  issuerID,
-		OwnerIDs:  owners,
-		PatEncIA:  "Y3JpcHRvZ3JhbWE=",
 		ExpiresAt: now.Add(10 * time.Minute),
 		CreatedAt: now,
 	}
@@ -28,8 +25,6 @@ func nuevoIntento(issuerID uuid.UUID, owners ...uuid.UUID) *domain.Attempt {
 type filaIntento struct {
 	id        uuid.UUID
 	issuerID  uuid.UUID
-	ownerIDs  []string
-	patEncIA  string
 	expiresAt time.Time
 }
 
@@ -38,7 +33,7 @@ func leerIntentos(t *testing.T, repo *AttemptRepository) []filaIntento {
 
 	// created_at/expires_at se escanean como string: el driver de SQLite no
 	// reconoce "timestamptz" como columna de fecha (ver inboxRow).
-	rows, err := repo.db.Raw("SELECT id, issuer_id, owner_ids, pat_enc_ia, expires_at FROM alert_attempts").Rows()
+	rows, err := repo.db.Raw("SELECT id, issuer_id, expires_at FROM alert_attempts").Rows()
 	if err != nil {
 		t.Fatalf("no se pudo leer alert_attempts: %v", err)
 	}
@@ -47,12 +42,9 @@ func leerIntentos(t *testing.T, repo *AttemptRepository) []filaIntento {
 	var intentos []filaIntento
 	for rows.Next() {
 		var f filaIntento
-		var owners, expires string
-		if err := rows.Scan(&f.id, &f.issuerID, &owners, &f.patEncIA, &expires); err != nil {
+		var expires string
+		if err := rows.Scan(&f.id, &f.issuerID, &expires); err != nil {
 			t.Fatalf("error al leer la fila: %v", err)
-		}
-		if err := json.Unmarshal([]byte(owners), &f.ownerIDs); err != nil {
-			t.Fatalf("owner_ids no es JSON: %v", err)
 		}
 		if f.expiresAt, err = parseCreatedAt(expires); err != nil {
 			t.Fatalf("expires_at ilegible: %v", err)
@@ -65,8 +57,7 @@ func leerIntentos(t *testing.T, repo *AttemptRepository) []filaIntento {
 func TestAttemptRepository_Upsert_GuardaElIntento(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewAttemptRepository(db)
-	ownerA, ownerB := uuid.New(), uuid.New()
-	attempt := nuevoIntento(uuid.New(), ownerA, ownerB)
+	attempt := nuevoIntento(uuid.New())
 
 	if err := repo.Upsert(context.Background(), attempt); err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -77,11 +68,8 @@ func TestAttemptRepository_Upsert_GuardaElIntento(t *testing.T) {
 		t.Fatalf("intentos = %d, se esperaba 1", len(intentos))
 	}
 	got := intentos[0]
-	if got.id != attempt.ID || got.issuerID != attempt.IssuerID || got.patEncIA != attempt.PatEncIA {
+	if got.id != attempt.ID || got.issuerID != attempt.IssuerID {
 		t.Errorf("fila = %+v", got)
-	}
-	if !reflect.DeepEqual(got.ownerIDs, []string{ownerA.String(), ownerB.String()}) {
-		t.Errorf("owner_ids = %v", got.ownerIDs)
 	}
 	if !got.expiresAt.Equal(attempt.ExpiresAt) {
 		t.Errorf("expires_at = %v, se esperaba %v", got.expiresAt, attempt.ExpiresAt)
@@ -92,9 +80,8 @@ func TestAttemptRepository_Upsert_UnSegundoIntentoReemplazaAlPrimero(t *testing.
 	db := nuevaDBDePrueba(t)
 	repo := NewAttemptRepository(db)
 	issuerID := uuid.New()
-	first := nuevoIntento(issuerID, uuid.New())
-	second := nuevoIntento(issuerID, uuid.New(), uuid.New())
-	second.PatEncIA = "b3Ryby1jcmlwdG9ncmFtYQ=="
+	first := nuevoIntento(issuerID)
+	second := nuevoIntento(issuerID)
 
 	if err := repo.Upsert(context.Background(), first); err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -111,7 +98,7 @@ func TestAttemptRepository_Upsert_UnSegundoIntentoReemplazaAlPrimero(t *testing.
 	if got.id != second.ID {
 		t.Errorf("id = %v, se esperaba el del segundo intento %v: el id viejo debe dejar de valer", got.id, second.ID)
 	}
-	if got.patEncIA != second.PatEncIA || len(got.ownerIDs) != 2 {
+	if !got.expiresAt.Equal(second.ExpiresAt) || got.issuerID != issuerID {
 		t.Errorf("la fila no se reemplazó completa: %+v", got)
 	}
 }
@@ -121,7 +108,7 @@ func TestAttemptRepository_Upsert_IntentosDeOtrosEmisoresConviven(t *testing.T) 
 	repo := NewAttemptRepository(db)
 
 	for i := 0; i < 3; i++ {
-		if err := repo.Upsert(context.Background(), nuevoIntento(uuid.New(), uuid.New())); err != nil {
+		if err := repo.Upsert(context.Background(), nuevoIntento(uuid.New())); err != nil {
 			t.Fatalf("error inesperado: %v", err)
 		}
 	}
@@ -137,7 +124,7 @@ func TestAttemptRepository_Upsert_ContextoVencido_ClasificaComoBaseNoDisponible(
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	err := repo.Upsert(ctx, nuevoIntento(uuid.New(), uuid.New()))
+	err := repo.Upsert(ctx, nuevoIntento(uuid.New()))
 
 	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba ErrDatabaseUnavailable", err)
@@ -148,9 +135,9 @@ func TestAttemptModel_NoGuardaLaPatenteNiPatEnc(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 
 	columnas := columnasDe(t, db, "alert_attempts")
-	esperadas := []string{"id", "issuer_id", "owner_ids", "pat_enc_ia", "expires_at", "created_at"}
+	esperadas := []string{"id", "issuer_id", "expires_at", "created_at"}
 	if !reflect.DeepEqual(columnas, esperadas) {
-		t.Errorf("columnas = %v, se esperaban %v: la tabla no puede guardar pat_enc", columnas, esperadas)
+		t.Errorf("columnas = %v, se esperaban %v: el intento no guarda patente, dueños ni criptogramas", columnas, esperadas)
 	}
 }
 
@@ -160,7 +147,7 @@ func TestAttemptModel_TieneIndiceUnicoPorEmisorEIndicePorExpiracion(t *testing.T
 
 	for i := 0; i < 2; i++ {
 		err := db.Exec(
-			"INSERT INTO alert_attempts (id, issuer_id, owner_ids, pat_enc_ia, expires_at, created_at) VALUES (?, ?, '[]', 'x', ?, ?)",
+			"INSERT INTO alert_attempts (id, issuer_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
 			uuid.New(), issuerID, time.Now().UTC(), time.Now().UTC(),
 		).Error
 		if i == 0 && err != nil {
@@ -181,8 +168,7 @@ func TestAttemptModel_TieneIndiceUnicoPorEmisorEIndicePorExpiracion(t *testing.T
 func TestAttemptRepository_Get_DevuelveElIntentoDelEmisor(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewAttemptRepository(db)
-	ownerA, ownerB := uuid.New(), uuid.New()
-	attempt := nuevoIntento(uuid.New(), ownerA, ownerB)
+	attempt := nuevoIntento(uuid.New())
 	if err := repo.Upsert(context.Background(), attempt); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -192,11 +178,8 @@ func TestAttemptRepository_Get_DevuelveElIntentoDelEmisor(t *testing.T) {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	if got.ID != attempt.ID || got.IssuerID != attempt.IssuerID || got.PatEncIA != attempt.PatEncIA {
+	if got.ID != attempt.ID || got.IssuerID != attempt.IssuerID {
 		t.Errorf("intento = %+v", got)
-	}
-	if !reflect.DeepEqual(got.OwnerIDs, []uuid.UUID{ownerA, ownerB}) {
-		t.Errorf("owner_ids = %v, se esperaba [%v %v]", got.OwnerIDs, ownerA, ownerB)
 	}
 	if !got.ExpiresAt.Equal(attempt.ExpiresAt) || !got.CreatedAt.Equal(attempt.CreatedAt) {
 		t.Errorf("expires_at/created_at = %v/%v, se esperaba %v/%v", got.ExpiresAt, got.CreatedAt, attempt.ExpiresAt, attempt.CreatedAt)
@@ -206,7 +189,7 @@ func TestAttemptRepository_Get_DevuelveElIntentoDelEmisor(t *testing.T) {
 func TestAttemptRepository_Get_IntentoInexistenteOAjeno_DevuelveErrAttemptNotFound(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewAttemptRepository(db)
-	attempt := nuevoIntento(uuid.New(), uuid.New())
+	attempt := nuevoIntento(uuid.New())
 	if err := repo.Upsert(context.Background(), attempt); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -218,7 +201,7 @@ func TestAttemptRepository_Get_IntentoInexistenteOAjeno_DevuelveErrAttemptNotFou
 	}
 	// Un segundo intento del mismo emisor reemplaza al primero: el id viejo
 	// deja de valer.
-	reemplazo := nuevoIntento(attempt.IssuerID, uuid.New())
+	reemplazo := nuevoIntento(attempt.IssuerID)
 	if err := repo.Upsert(context.Background(), reemplazo); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -237,7 +220,7 @@ func TestAttemptRepository_Get_DevuelveElIntentoVencidoSinFiltrar(t *testing.T) 
 	// distintas.
 	db := nuevaDBDePrueba(t)
 	repo := NewAttemptRepository(db)
-	attempt := nuevoIntento(uuid.New(), uuid.New())
+	attempt := nuevoIntento(uuid.New())
 	attempt.ExpiresAt = time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	if err := repo.Upsert(context.Background(), attempt); err != nil {
 		t.Fatalf("error inesperado: %v", err)

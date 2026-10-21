@@ -98,8 +98,6 @@ func nuevoEscenario(t *testing.T) *escenario {
 	attempt := &domain.Attempt{
 		ID:        uuid.New(),
 		IssuerID:  issuerID,
-		OwnerIDs:  owners,
-		PatEncIA:  "Y3JpcHRvZ3JhbWE=",
 		ExpiresAt: now.Add(10 * time.Minute),
 		CreatedAt: now,
 	}
@@ -121,7 +119,7 @@ func nuevoEscenario(t *testing.T) *escenario {
 			S3Key: domain.OriginalEvidenceKey(alert.ID, domain.EvidenceRoleDetail, 1), SHA256: strings.Repeat("b", 64), CreatedAt: now},
 	}
 	event, err := domain.NewEvidenceUploadedEvent(uuid.New(), domain.EvidenceUploadedPayload{
-		AlertID: alert.ID, AlertType: alert.AlertType, PatEncIA: attempt.PatEncIA, Bucket: "bucket",
+		AlertID: alert.ID, AlertType: alert.AlertType, PatEncIA: "Y3JpcHRvZ3JhbWE=", Bucket: "bucket",
 		Evidence: []domain.EvidenceRef{{Role: domain.EvidenceRoleGeneral, Index: 0, Key: evidence[0].S3Key, SHA256: evidence[0].SHA256}},
 	}, now)
 	if err != nil {

@@ -18,7 +18,6 @@ import (
 
 const (
 	testBucket    = "vinculo-vial-evidence-test"
-	patEncIATest  = "Y3JpcHRvZ3JhbWEtaWE="
 	testPutBudget = time.Second
 )
 
@@ -174,8 +173,6 @@ func nuevoFixture(t *testing.T) *fixture {
 	attempt := &domain.Attempt{
 		ID:        uuid.New(),
 		IssuerID:  issuerID,
-		OwnerIDs:  []uuid.UUID{uuid.New(), uuid.New()},
-		PatEncIA:  patEncIATest,
 		ExpiresAt: ahora.Add(5 * time.Minute),
 		CreatedAt: ahora.Add(-5 * time.Minute),
 	}
@@ -287,9 +284,6 @@ func TestExecute_CasoExitoso_PersisteLaAlertaConDestinatariosYEvidencia(t *testi
 	if !got.CreatedAt.Equal(ahora) {
 		t.Errorf("created_at = %v, se esperaba %v", got.CreatedAt, ahora)
 	}
-	if len(f.alerts.owners) != 2 || f.alerts.owners[0] != f.attempt.OwnerIDs[0] || f.alerts.owners[1] != f.attempt.OwnerIDs[1] {
-		t.Errorf("destinatarios = %v, se esperaban los dueños del intento %v", f.alerts.owners, f.attempt.OwnerIDs)
-	}
 
 	if len(f.alerts.evidence) != 4 {
 		t.Fatalf("filas de evidencia = %d, se esperaban 4", len(f.alerts.evidence))
@@ -341,8 +335,8 @@ func TestExecute_CasoExitoso_EncolaAlertEvidenceUploadedSinActorNiIdentificadore
 	if payload.AlertID != f.attempt.ID.String() || payload.AlertType != "CRASHED" {
 		t.Errorf("payload = %+v", payload)
 	}
-	if payload.PatEncIA != patEncIATest || payload.Bucket != testBucket {
-		t.Errorf("pat_enc_ia/bucket = %q/%q", payload.PatEncIA, payload.Bucket)
+	if payload.Bucket != testBucket {
+		t.Errorf("bucket = %q, se esperaba %q", payload.Bucket, testBucket)
 	}
 	if len(payload.Evidence) != 4 {
 		t.Fatalf("evidence = %d, se esperaban 4", len(payload.Evidence))
@@ -357,11 +351,6 @@ func TestExecute_CasoExitoso_EncolaAlertEvidenceUploadedSinActorNiIdentificadore
 	raw := string(event.Payload)
 	if strings.Contains(raw, f.issuerID.String()) {
 		t.Error("el emisor no puede figurar en el payload")
-	}
-	for _, owner := range f.attempt.OwnerIDs {
-		if strings.Contains(raw, owner.String()) {
-			t.Error("los dueños no pueden figurar en un evento hacia IA")
-		}
 	}
 	if strings.Contains(raw, "http://") || strings.Contains(raw, "https://") {
 		t.Error("por el bus viajan claves, nunca URLs")

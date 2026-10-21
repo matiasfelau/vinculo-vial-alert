@@ -15,9 +15,9 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-func routerDeAttempts(restrictions *mockRestrictions, resolver *resolverDePrueba, attempts *mockAttempts) *gin.Engine {
+func routerDeAttempts(restrictions *mockRestrictions, attempts *mockAttempts) *gin.Engine {
 	deps := nuevasDeps()
-	deps.restrictions, deps.resolver, deps.attempts = restrictions, resolver, attempts
+	deps.restrictions, deps.attempts = restrictions, attempts
 	return deps.router()
 }
 
@@ -41,67 +41,82 @@ func errorBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]string {
 	return body
 }
 
-func resolverConDuenos() *resolverDePrueba {
-	return &resolverDePrueba{resolved: domain.ResolvedOwners{
-		OwnerIDs: []uuid.UUID{uuid.New()},
-		PatEncIA: "Y3JpcHRvZ3JhbWE=",
-	}}
-}
-
 func TestCreateAttempt_SinXUserId_Devuelve401(t *testing.T) {
-	resolver := resolverConDuenos()
-	router := routerDeAttempts(&mockRestrictions{}, resolver, &mockAttempts{})
+	attempts := &mockAttempts{}
+	router := routerDeAttempts(&mockRestrictions{}, attempts)
 
-	rec := postAttempt(router, "", `{"pat_enc":"x"}`)
+	rec := postAttempt(router, "", "")
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, se esperaba 401", rec.Code)
 	}
-	if resolver.called {
-		t.Error("sin identidad no debe consultarse a Vehicle")
+	if attempts.saved != nil {
+		t.Error("sin identidad no debe guardarse ningún intento")
 	}
 }
 
 func TestCreateAttempt_CasoExitoso_Devuelve201ConAttemptIDYExpiresAt(t *testing.T) {
 	attempts := &mockAttempts{}
-	resolver := resolverConDuenos()
-	router := routerDeAttempts(&mockRestrictions{}, resolver, attempts)
+	issuerID := uuid.New()
+	router := routerDeAttempts(&mockRestrictions{}, attempts)
 
-	rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"criptograma"}`)
+	rec := postAttempt(router, issuerID.String(), "")
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, se esperaba 201 (%s)", rec.Code, rec.Body.String())
 	}
-	var body struct {
-		AttemptID string `json:"attempt_id"`
-		ExpiresAt string `json:"expires_at"`
-	}
+	var body map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body inválido: %v", err)
 	}
-	if body.AttemptID != resolver.alertID.String() {
-		t.Errorf("attempt_id = %q, se esperaba el alert_id enviado a Vehicle (%v)", body.AttemptID, resolver.alertID)
+	if len(body) != 2 || body["attempt_id"] == "" || body["expires_at"] == "" {
+		t.Fatalf("body = %v, se esperaban exactamente attempt_id y expires_at", body)
 	}
-	if attempts.saved == nil || attempts.saved.ID.String() != body.AttemptID {
-		t.Error("el intento respondido debía ser el guardado")
+	if attempts.saved == nil || attempts.saved.ID.String() != body["attempt_id"] || attempts.saved.IssuerID != issuerID {
+		t.Error("el intento respondido debía ser el guardado, del emisor del request")
 	}
-	expiresAt, err := time.Parse(time.RFC3339, body.ExpiresAt)
+	expiresAt, err := time.Parse(time.RFC3339, body["expires_at"])
 	if err != nil {
 		t.Fatalf("expires_at no es RFC3339: %v", err)
 	}
 	if ttl := time.Until(expiresAt); ttl < 9*time.Minute || ttl > 10*time.Minute {
 		t.Errorf("expires_at está a %v, se esperaba ~10 minutos (ATTEMPT_TTL)", ttl)
 	}
-	if strings.Contains(rec.Body.String(), "pat_enc") {
-		t.Error("la respuesta no debe incluir criptogramas")
+}
+
+func TestCreateAttempt_ElBodyNoCambiaLaRespuesta_SeIgnoraPatEnc(t *testing.T) {
+	casos := map[string]string{
+		"sin body":                 "",
+		"con pat_enc":              `{"pat_enc":"criptograma"}`,
+		"json malformado":          `{no es json`,
+		"pat_enc vacío":            `{"pat_enc":""}`,
+		"body de un cliente viejo": `{"pat_enc":"` + strings.Repeat("A", 8<<10) + `"}`,
+	}
+	for nombre, body := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			attempts := &mockAttempts{}
+			router := routerDeAttempts(&mockRestrictions{}, attempts)
+
+			rec := postAttempt(router, uuid.New().String(), body)
+
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, se esperaba 201: el body se ignora (%s)", rec.Code, rec.Body.String())
+			}
+			if attempts.saved == nil {
+				t.Error("debía guardarse el intento")
+			}
+			if strings.Contains(rec.Body.String(), "pat_enc") || strings.Contains(rec.Body.String(), "owner") {
+				t.Errorf("la respuesta no debe mencionar patente ni dueños: %s", rec.Body.String())
+			}
+		})
 	}
 }
 
-func TestCreateAttempt_EmisorEnRevision_Devuelve403SinLlamarAVehicle(t *testing.T) {
-	resolver := resolverConDuenos()
-	router := routerDeAttempts(&mockRestrictions{underReview: true}, resolver, &mockAttempts{})
+func TestCreateAttempt_EmisorEnRevision_Devuelve403SinGuardarNada(t *testing.T) {
+	attempts := &mockAttempts{}
+	router := routerDeAttempts(&mockRestrictions{underReview: true}, attempts)
 
-	rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
+	rec := postAttempt(router, uuid.New().String(), "")
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, se esperaba 403", rec.Code)
@@ -109,84 +124,29 @@ func TestCreateAttempt_EmisorEnRevision_Devuelve403SinLlamarAVehicle(t *testing.
 	if code := errorBody(t, rec)["code"]; code != "ISSUER_UNDER_REVIEW" {
 		t.Errorf("code = %q, se esperaba ISSUER_UNDER_REVIEW", code)
 	}
-	if resolver.called {
-		t.Error("un emisor en revisión no debe disparar la consulta a Vehicle")
-	}
-}
-
-func TestCreateAttempt_Vehicle400_Devuelve400ConCodigo(t *testing.T) {
-	resolver := &resolverDePrueba{err: domain.ErrInvalidPlateCryptogram}
-	router := routerDeAttempts(&mockRestrictions{}, resolver, &mockAttempts{})
-
-	rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, se esperaba 400", rec.Code)
-	}
-	if code := errorBody(t, rec)["code"]; code != "INVALID_PLATE_CRYPTOGRAM" {
-		t.Errorf("code = %q, se esperaba INVALID_PLATE_CRYPTOGRAM", code)
-	}
-}
-
-func TestCreateAttempt_Vehicle5xxORespuestaInvalida_Devuelve502(t *testing.T) {
-	for nombre, errVehicle := range map[string]error{
-		"5xx o cuerpo inválido": domain.ErrVehicleBadResponse,
-		"token rechazado":       domain.ErrVehicleRejected,
-	} {
-		t.Run(nombre, func(t *testing.T) {
-			router := routerDeAttempts(&mockRestrictions{}, &resolverDePrueba{err: errVehicle}, &mockAttempts{})
-
-			rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
-
-			if rec.Code != http.StatusBadGateway {
-				t.Fatalf("status = %d, se esperaba 502", rec.Code)
-			}
-			if code := errorBody(t, rec)["code"]; code != "UPSTREAM_BAD_GATEWAY" {
-				t.Errorf("code = %q, se esperaba UPSTREAM_BAD_GATEWAY", code)
-			}
-			if rec.Header().Get("Retry-After") != "" {
-				t.Error("un 502 no lleva Retry-After")
-			}
-		})
-	}
-}
-
-func TestCreateAttempt_TimeoutConexionOCircuitoAbierto_Devuelve503ConRetryAfter(t *testing.T) {
-	router := routerDeAttempts(&mockRestrictions{}, &resolverDePrueba{err: domain.ErrVehicleUnavailable}, &mockAttempts{})
-
-	rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, se esperaba 503", rec.Code)
-	}
-	if code := errorBody(t, rec)["code"]; code != "DEPENDENCY_UNAVAILABLE" {
-		t.Errorf("code = %q, se esperaba DEPENDENCY_UNAVAILABLE", code)
-	}
-	if got := rec.Header().Get("Retry-After"); got != "7" {
-		t.Errorf("Retry-After = %q, se esperaba 7", got)
+	if attempts.saved != nil {
+		t.Error("un emisor en revisión no debe guardar un intento")
 	}
 }
 
 func TestCreateAttempt_BaseDeDatosCaida_Devuelve503ConRetryAfter(t *testing.T) {
-	casos := map[string]*mockRestrictions{
-		"al consultar la restricción": {err: domain.ErrDatabaseUnavailable},
-	}
-	for nombre, restrictions := range casos {
-		t.Run(nombre, func(t *testing.T) {
-			router := routerDeAttempts(restrictions, resolverConDuenos(), &mockAttempts{})
+	t.Run("al consultar la restricción", func(t *testing.T) {
+		router := routerDeAttempts(&mockRestrictions{err: domain.ErrDatabaseUnavailable}, &mockAttempts{})
 
-			rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
+		rec := postAttempt(router, uuid.New().String(), "")
 
-			if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
-				t.Fatalf("status = %d, Retry-After = %q", rec.Code, rec.Header().Get("Retry-After"))
-			}
-		})
-	}
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "7" {
+			t.Fatalf("status = %d, Retry-After = %q", rec.Code, rec.Header().Get("Retry-After"))
+		}
+		if code := errorBody(t, rec)["code"]; code != "DEPENDENCY_UNAVAILABLE" {
+			t.Errorf("code = %q, se esperaba DEPENDENCY_UNAVAILABLE", code)
+		}
+	})
 
 	t.Run("al guardar el intento", func(t *testing.T) {
-		router := routerDeAttempts(&mockRestrictions{}, resolverConDuenos(), &mockAttempts{upsertEr: domain.ErrDatabaseUnavailable})
+		router := routerDeAttempts(&mockRestrictions{}, &mockAttempts{upsertEr: domain.ErrDatabaseUnavailable})
 
-		rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
+		rec := postAttempt(router, uuid.New().String(), "")
 
 		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
 			t.Fatalf("status = %d, Retry-After = %q", rec.Code, rec.Header().Get("Retry-After"))
@@ -194,56 +154,10 @@ func TestCreateAttempt_BaseDeDatosCaida_Devuelve503ConRetryAfter(t *testing.T) {
 	})
 }
 
-func TestCreateAttempt_SoloElEmisorComoDueno_Devuelve404SinGuardarNada(t *testing.T) {
-	issuerID := uuid.New()
-	attempts := &mockAttempts{}
-	resolver := &resolverDePrueba{resolved: domain.ResolvedOwners{OwnerIDs: []uuid.UUID{issuerID}, PatEncIA: "Y3JpcHRv"}}
-	router := routerDeAttempts(&mockRestrictions{}, resolver, attempts)
-
-	rec := postAttempt(router, issuerID.String(), `{"pat_enc":"x"}`)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, se esperaba 404", rec.Code)
-	}
-	if code := errorBody(t, rec)["code"]; code != "NOT_IN_NETWORK" {
-		t.Errorf("code = %q, se esperaba NOT_IN_NETWORK", code)
-	}
-	if attempts.saved != nil {
-		t.Error("sin destinatarios no debe guardarse ningún intento")
-	}
-}
-
-func TestCreateAttempt_BodyInvalido_Devuelve400SinLlamarAVehicle(t *testing.T) {
-	casos := map[string]string{
-		"json malformado":       `{no es json`,
-		"sin pat_enc":           `{}`,
-		"pat_enc vacío":         `{"pat_enc":""}`,
-		"body demasiado grande": `{"pat_enc":"` + strings.Repeat("A", maxAttemptBodyBytes+1) + `"}`,
-	}
-	for nombre, body := range casos {
-		t.Run(nombre, func(t *testing.T) {
-			resolver := resolverConDuenos()
-			router := routerDeAttempts(&mockRestrictions{}, resolver, &mockAttempts{})
-
-			rec := postAttempt(router, uuid.New().String(), body)
-
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, se esperaba 400", rec.Code)
-			}
-			if code := errorBody(t, rec)["code"]; code != "INVALID_PLATE_CRYPTOGRAM" {
-				t.Errorf("code = %q, se esperaba INVALID_PLATE_CRYPTOGRAM", code)
-			}
-			if resolver.called {
-				t.Error("un body inválido no debe llegar a Vehicle")
-			}
-		})
-	}
-}
-
 func TestCreateAttempt_ErrorInterno_Devuelve500SinDetalles(t *testing.T) {
-	router := routerDeAttempts(&mockRestrictions{}, resolverConDuenos(), &mockAttempts{upsertEr: errors.New("violación de constraint en alert_attempts")})
+	router := routerDeAttempts(&mockRestrictions{}, &mockAttempts{upsertEr: errors.New("violación de constraint en alert_attempts")})
 
-	rec := postAttempt(router, uuid.New().String(), `{"pat_enc":"x"}`)
+	rec := postAttempt(router, uuid.New().String(), "")
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, se esperaba 500", rec.Code)

@@ -19,7 +19,7 @@ func insertarIntento(t *testing.T, db *gorm.DB, expiresAt time.Time) uuid.UUID {
 
 	id := uuid.New()
 	err := db.Exec(
-		"INSERT INTO alert_attempts (id, issuer_id, owner_ids, pat_enc_ia, expires_at, created_at) VALUES (?, ?, '[]', 'x', ?, ?)",
+		"INSERT INTO alert_attempts (id, issuer_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
 		id, uuid.New(), expiresAt, ahoraSweeper,
 	).Error
 	if err != nil {

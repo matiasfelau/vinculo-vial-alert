@@ -11,7 +11,6 @@ import (
 // mensaje: { "error": "<mensaje>", "code": "<CODE>" }.
 const (
 	codeInvalidPlateCryptogram = "INVALID_PLATE_CRYPTOGRAM"
-	codeNotInNetwork           = "NOT_IN_NETWORK"
 	codeIssuerUnderReview      = "ISSUER_UNDER_REVIEW"
 	codeUpstreamBadGateway     = "UPSTREAM_BAD_GATEWAY"
 	codeDependencyUnavailable  = "DEPENDENCY_UNAVAILABLE"
