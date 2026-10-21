@@ -172,3 +172,17 @@ func (r *SweeperRepository) DeleteEvidenceRows(ctx context.Context, ids []uuid.U
 
 	return classifyDBError(r.db.WithContext(ctx).Where("id IN ?", ids).Delete(&AlertEvidenceModel{}).Error)
 }
+
+// ClearExpiredPending implementa domain.SweeperRepository. Un único UPDATE
+// condicional: solo toca las filas con la entrega vencida, así que repetirlo o
+// correrlo desde varias réplicas no tiene efectos. No cambia el estado ni los
+// destinatarios de la alerta.
+func (r *SweeperRepository) ClearExpiredPending(ctx context.Context, now time.Time) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	result := r.db.WithContext(ctx).Model(&AlertModel{}).
+		Where("pending_until <= ?", now).
+		Updates(map[string]any{"pending_ref": nil, "pending_until": nil})
+	return result.RowsAffected, classifyDBError(result.Error)
+}

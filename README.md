@@ -146,6 +146,50 @@ alertas, con índice parcial por `pending_ref`. Ninguna respuesta (buzón, Envia
 evidencia, el `202`), ningún evento hacia IA ni ningún log los incluye, y nunca
 se loguean junto al emisor.
 
+## Entrega de alertas pendientes (US-10)
+
+Cuando el primer usuario vincula un vehículo que tenía alertas pendientes,
+Vehicle borra su fila de patente pendiente y publica `vehicle.pending.claimed`
+(`{ pending_ref }` en el payload, `actor` = el dueño nuevo). Alert consume esa
+cola (`PENDING_CLAIMED_QUEUE`, por defecto `alert.vehicle-pending-claimed.q`)
+con ack manual, `prefetch`, reintentos por `x-death` hasta `MAX_RETRIES` y DLQ
+con confirm; un mensaje inválido (sin `pending_ref` UUID o sin `actor`) va
+directo a la DLQ.
+
+Para cada alerta con ese `pending_ref`, `pending_until > now`, estado
+`PENDING_VALIDATION` o `ACTIVE` y un emisor distinto del dueño, en **una
+transacción**:
+
+1. crea la fila de `alert_destinations` del dueño nuevo;
+2. anula `pending_ref` y `pending_until`;
+3. si entregó al menos una alerta `ACTIVE`, encola **un único**
+   `alert.pending.delivered { owner_ids: [dueño], count }`, sin `actor`, así que
+   Notification nunca le avisa al emisor. `count` son solo las `ACTIVE`: las que
+   seguían en `PENDING_VALIDATION` no cuentan, porque su GREEN posterior le
+   avisa al dueño por `alert.created`, que ya lo incluye entre los destinatarios.
+
+Nunca se entrega una alerta `REJECTED` o `EXPIRED`, una con la entrega vencida ni
+una del propio dueño. El buzón, `seen`, la valoración y el reporte no cambian: se
+basan en `alert_destinations`. Cuando el dueño nuevo abre la alerta se marca el
+visto y el emisor ve "Leída".
+
+**Idempotencia.** Todo se hace con un único `UPDATE ... RETURNING` que anula la
+referencia: un reintento o un duplicado no encuentra nada que entregar, no crea
+destinatarios y no vuelve a encolar el aviso. El mismo `UPDATE` toma el lock de
+cada fila, así que se serializa con el veredicto (`Activate` y `Reject` también
+actualizan la fila): si el veredicto llega antes, el aviso sale por
+`alert.pending.delivered`; si llega después, lee al dueño nuevo entre los
+destinatarios y sale por `alert.created`. En ningún orden se pierde ni se
+duplica. Se verificó contra PostgreSQL 16 con 300 carreras claim ↔ GREEN y 200
+claim ↔ RED.
+
+**Vencimiento.** El sweeper anula `pending_ref` y `pending_until` de las alertas
+cuya entrega venció (`pending_until <= now`), sin tocar el estado ni los
+destinatarios: la alerta sigue existiendo para el emisor en Enviados.
+
+Los logs de este flujo llevan solo cantidades: nunca la referencia pendiente ni
+los emisores.
+
 ## Regla de entrega según evidencia
 
 Al resolver el veredicto de IA (`ia.evidence.validated.*`), Alert decide si la
@@ -195,6 +239,11 @@ nada.
 `SENT_RETENTION_DAYS` (por defecto 30) es la ventana de Enviados: el sweeper
 borra las alertas `REJECTED` y `EXPIRED` con `created_at` anterior a ella. Las
 `ACTIVE` y las `PENDING_VALIDATION` no se ven afectadas.
+
+Cada vuelta también anula `pending_ref` y `pending_until` de las alertas cuya
+entrega venció (`pending_until <= now`, ver "Entrega de alertas pendientes"): la
+alerta no se entrega a un dueño futuro, pero sigue existiendo, con su estado y
+sus destinatarios, para el emisor en Enviados.
 
 ## Enviados (`GET /api/v1/alerts/sent`)
 
@@ -250,3 +299,15 @@ viaja solo en `actor`, nunca en el payload.
 | `alert.expired` | emisor | `{ alert_id, alert_type }` |
 | `alert.seen` | emisor | `{ alert_id, alert_type }` |
 | `alert.reported` | emisor reportado | `{ alert_id, reason }` |
+| `alert.pending.delivered` | `null` | `{ owner_ids: [dueño], count }` |
+
+## Eventos consumidos
+
+Las colas (trabajo, `.retry` y `.dlq`) las declara solo `vinculo-vial-core`; Alert
+consume sobre topología existente, con ack manual, `prefetch` y `MAX_RETRIES`.
+
+| Cola (variable) | `eventType` | Efecto |
+|---|---|---|
+| `alert.ia-evidence-validated.q` (`VERDICT_QUEUE`) | `ia.evidence.validated.*` | aplica el veredicto de IA |
+| `alert.user-status-changed.q` (`USER_STATUS_QUEUE`) | `user.status.changed` | bloquea la creación de alertas a los emisores `UNDER_REVIEW` |
+| `alert.vehicle-pending-claimed.q` (`PENDING_CLAIMED_QUEUE`) | `vehicle.pending.claimed` | entrega las alertas pendientes al primer dueño |

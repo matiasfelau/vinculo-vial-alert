@@ -46,6 +46,7 @@ type Config struct {
 	S3BreakerOpenDuration          time.Duration
 	VerdictQueue                   string
 	UserStatusQueue                string
+	PendingClaimedQueue            string
 	EvidenceRetention              time.Duration
 	SentRetention                  time.Duration
 	PendingTimeout                 time.Duration
@@ -67,6 +68,7 @@ func Load() (Config, error) {
 		EvidenceBucket:       os.Getenv("EVIDENCE_BUCKET"),
 		VerdictQueue:         getEnvDefault("VERDICT_QUEUE", "alert.ia-evidence-validated.q"),
 		UserStatusQueue:      getEnvDefault("USER_STATUS_QUEUE", "alert.user-status-changed.q"),
+		PendingClaimedQueue:  getEnvDefault("PENDING_CLAIMED_QUEUE", "alert.vehicle-pending-claimed.q"),
 	}
 
 	required := map[string]string{

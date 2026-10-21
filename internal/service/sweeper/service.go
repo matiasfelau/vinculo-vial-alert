@@ -1,7 +1,7 @@
 // Package sweeper ejecuta las limpiezas periódicas del servicio: intentos
-// vencidos, alertas que nunca recibieron veredicto, alertas rechazadas o
-// vencidas fuera de la ventana de Enviados y evidencia redactada cuya
-// retención venció.
+// vencidos, alertas que nunca recibieron veredicto, referencias de patentes
+// pendientes cuya entrega venció, alertas rechazadas o vencidas fuera de la
+// ventana de Enviados y evidencia redactada cuya retención venció.
 package sweeper
 
 import (
@@ -70,6 +70,16 @@ func (s *Sweeper) RunOnce(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("sweeper: error al expirar las alertas pendientes: %w", err))
 	} else if expired > 0 {
 		slog.Warn("sweeper: alertas sin veredicto pasadas a EXPIRED", "cantidad", expired)
+	}
+
+	// Pasado pending_until la alerta ya no se entrega a un dueño futuro: se
+	// anula la referencia, nunca el estado ni los destinatarios. Se loguea solo
+	// la cantidad: la referencia identifica una patente.
+	cleared, err := s.repo.ClearExpiredPending(ctx, now)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("sweeper: error al anular las referencias pendientes vencidas: %w", err))
+	} else if cleared > 0 {
+		slog.Info("sweeper: referencias de patentes pendientes vencidas anuladas", "cantidad", cleared)
 	}
 
 	sent, err := s.repo.DeleteExpiredSent(ctx, now.Add(-s.sentRetention))
