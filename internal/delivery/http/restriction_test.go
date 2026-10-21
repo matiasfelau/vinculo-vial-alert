@@ -44,3 +44,20 @@ func TestEmisorEnRevision_BloqueaLaCreacionPeroNoElBuzonNiLasOperacionesDelDueno
 		}
 	}
 }
+
+func TestEmisorEnRevision_NoDisparaLaConsultaAVehicleAlEnviar(t *testing.T) {
+	// La resolución de dueños ahora vive en POST /alerts: el control de la
+	// revisión tiene que cortar antes de llamar a Vehicle.
+	issuerID := uuid.New()
+	deps, attemptID := depsConIntento(t, issuerID)
+	deps.restrictions.underReview = true
+
+	rec := servir(deps, nuevoPost(t, issuerID.String(), append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...)...))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, se esperaba 403", rec.Code)
+	}
+	if deps.resolver.calls != 0 {
+		t.Error("un emisor en revisión no debe disparar la consulta a Vehicle")
+	}
+}

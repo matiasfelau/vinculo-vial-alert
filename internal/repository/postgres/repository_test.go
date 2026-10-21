@@ -213,7 +213,7 @@ func TestAlertRepository_CreatePending_PersisteLaAlertaEnPendingValidation(t *te
 		t.Errorf("status = %q, requires_review = %v; se esperaba PENDING_VALIDATION y false", status, requiresReview)
 	}
 
-	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at"}
+	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at", "pending_ref", "pending_until"}
 	if got := columnasDe(t, e.db, "alerts"); !reflect.DeepEqual(got, esperadas) {
 		t.Errorf("columnas de alerts = %v, se esperaban %v (la tabla no debe persistir pat_enc ni owner_ids)", got, esperadas)
 	}

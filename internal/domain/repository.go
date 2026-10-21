@@ -11,10 +11,11 @@ import (
 type AlertRepository interface {
 	// CreatePending consume el intento del emisor y crea la alerta en
 	// PENDING_VALIDATION con sus destinatarios, las filas de evidencia
-	// ORIGINAL y el evento de outbox, todo en una única transacción: una
-	// alerta sin destinatarios es invisible en el buzón, y un evento de
-	// outbox persistido fuera de la transacción podría quedar huérfano o
-	// publicarse por una alerta que no se guardó.
+	// ORIGINAL y el evento de outbox, todo en una única transacción: un
+	// evento de outbox persistido fuera de la transacción podría quedar
+	// huérfano o publicarse por una alerta que no se guardó. Los
+	// destinatarios pueden ser ninguno (la patente no tenía dueños): la alerta
+	// se crea igual, con su referencia pendiente si Vehicle la informó.
 	//
 	// El intento se borra condicionalmente (mismo id, mismo emisor, no
 	// vencido en now). Si no afecta ninguna fila, el intento venció o ya lo

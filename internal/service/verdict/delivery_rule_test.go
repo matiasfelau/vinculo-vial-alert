@@ -141,3 +141,26 @@ func TestExecute_YellowSinRedactadas_ErrorDeLaBaseEsTransitorioYNoTocaS3(t *test
 		t.Error("si la transacción falló no se pone nada en cuarentena")
 	}
 }
+
+func TestExecute_ValidationFailed_SeRechazaComoRedSinFraude(t *testing.T) {
+	// VALIDATION_FAILED lo emite IA cuando no pudo validar: es RED y no entra en
+	// el conjunto de fraude, así que Alert rechaza con ese único motivo y deja
+	// que Identity decida no penalizar. Los originales van a cuarentena.
+	repo := &mockRepo{resolution: domain.Resolution{Applied: true, OriginalKeys: []string{"alerts/x/original/general-0.bin"}}}
+	store := &mockStore{}
+	entrada := resultadoConCodigos(domain.VerdictRed, uuid.New(), []domain.ReasonCode{domain.ReasonValidationFailed})
+
+	if err := nuevoServicio(repo, store).Execute(context.Background(), entrada); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if repo.rejects != 1 || repo.activates != 0 {
+		t.Fatalf("activates = %d, rejects = %d; VALIDATION_FAILED rechaza", repo.activates, repo.rejects)
+	}
+	if want := []domain.ReasonCode{domain.ReasonValidationFailed}; !reflect.DeepEqual(repo.lastResult.ReasonCodes, want) {
+		t.Errorf("reason_codes = %v, se esperaba %v (sin agregar otros)", repo.lastResult.ReasonCodes, want)
+	}
+	if len(store.tagged) != 1 {
+		t.Errorf("claves en cuarentena = %v, se esperaba 1", store.tagged)
+	}
+}

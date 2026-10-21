@@ -108,8 +108,12 @@ type EvidenceUploadedPayload struct {
 
 // NewEvidenceUploadedEvent construye el evento de outbox alert.evidence.uploaded.
 // El actor es nil: el evento va dirigido a IA, que no recibe identificadores
-// de usuario.
+// de usuario. Sin pat_enc_ia IA no puede validar la evidencia, así que el
+// evento nunca sale sin él: devuelve ErrPatEncIAMissing.
 func NewEvidenceUploadedEvent(id uuid.UUID, payload EvidenceUploadedPayload, createdAt time.Time) (OutboxEvent, error) {
+	if payload.PatEncIA == "" {
+		return OutboxEvent{}, ErrPatEncIAMissing
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return OutboxEvent{}, err

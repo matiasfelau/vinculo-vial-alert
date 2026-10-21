@@ -19,6 +19,12 @@ import (
 const (
 	testBucket    = "vinculo-vial-evidence-test"
 	testPutBudget = time.Second
+
+	testPendingDelivery = 24 * time.Hour
+
+	patEncDePrueba = "criptograma-hpke-hacia-vehicle"
+
+	patEncIATest = "Y3JpcHRvZ3JhbWEtaWE="
 )
 
 var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
@@ -161,6 +167,7 @@ type fixture struct {
 	issuerID uuid.UUID
 	attempt  *domain.Attempt
 	attempts *mockAttempts
+	resolver *mockResolver
 	alerts   *mockAlerts
 	store    *mockStore
 	svc      *CreateAlertService
@@ -180,10 +187,11 @@ func nuevoFixture(t *testing.T) *fixture {
 		issuerID: issuerID,
 		attempt:  attempt,
 		attempts: &mockAttempts{attempt: attempt},
+		resolver: &mockResolver{resolved: domain.ResolvedOwners{OwnerIDs: []uuid.UUID{uuid.New(), uuid.New()}, PatEncIA: patEncIATest}},
 		alerts:   &mockAlerts{},
 		store:    newMockStore(),
 	}
-	f.svc = NewCreateAlertService(&mockRestrictions{}, f.attempts, f.alerts, f.store, testBucket, testPutBudget)
+	f.svc = NewCreateAlertService(&mockRestrictions{}, f.attempts, f.resolver, f.alerts, f.store, testBucket, testPutBudget, testPendingDelivery)
 	f.svc.now = func() time.Time { return ahora }
 	return f
 }
@@ -192,7 +200,7 @@ func (f *fixture) input(files ...domain.EvidenceUpload) CreateAlertInput {
 	if len(files) == 0 {
 		files = fotosDeChoque()
 	}
-	return CreateAlertInput{IssuerID: f.issuerID, AttemptID: f.attempt.ID, AlertType: domain.AlertTypeCrashed, Files: files}
+	return CreateAlertInput{IssuerID: f.issuerID, AttemptID: f.attempt.ID, AlertType: domain.AlertTypeCrashed, PatEnc: patEncDePrueba, Files: files}
 }
 
 func fotosDeChoque() []domain.EvidenceUpload {
@@ -219,7 +227,7 @@ func TestCheckIssuer(t *testing.T) {
 	}
 	for nombre, caso := range casos {
 		t.Run(nombre, func(t *testing.T) {
-			svc := NewCreateAlertService(caso.restrictions, &mockAttempts{}, &mockAlerts{}, newMockStore(), testBucket, testPutBudget)
+			svc := NewCreateAlertService(caso.restrictions, &mockAttempts{}, &mockResolver{}, &mockAlerts{}, newMockStore(), testBucket, testPutBudget, testPendingDelivery)
 
 			err := svc.CheckIssuer(context.Background(), uuid.New())
 

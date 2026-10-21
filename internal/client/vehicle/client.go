@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -51,11 +52,13 @@ type resolveOwnerRequest struct {
 	AlertID string `json:"alert_id"`
 }
 
-// resolveOwnerResponse es la respuesta de Vehicle. pat_enc_ia se omite cuando
-// owner_ids está vacío.
+// resolveOwnerResponse es la respuesta de Vehicle. pat_enc_ia viene siempre,
+// también con owner_ids vacío. pending_ref viene solo cuando la patente no
+// tiene dueños; es un puntero para distinguir "ausente" de "vacío".
 type resolveOwnerResponse struct {
-	OwnerIDs []string `json:"owner_ids"`
-	PatEncIA string   `json:"pat_enc_ia,omitempty"`
+	OwnerIDs   []string `json:"owner_ids"`
+	PatEncIA   string   `json:"pat_enc_ia"`
+	PendingRef *string  `json:"pending_ref,omitempty"`
 }
 
 // ResolveOwners implementa domain.OwnerResolver: reenvía pat_enc sin abrirlo
@@ -132,16 +135,35 @@ func (c *Client) ResolveOwners(ctx context.Context, patEnc string, alertID uuid.
 		ownerIDs = append(ownerIDs, id)
 	}
 
-	if len(ownerIDs) == 0 {
-		return domain.ResolvedOwners{OwnerIDs: ownerIDs}, nil
-	}
-
-	// Con dueños, Vehicle siempre devuelve el criptograma hacia IA. Sin él no
-	// se puede validar la evidencia: es una respuesta fuera de contrato. Alert
-	// no lo abre; solo comprueba que sea base64 para no transportar basura.
+	// Vehicle siempre devuelve el criptograma hacia IA, con o sin dueños: IA lo
+	// necesita para validar la evidencia de una alerta aunque nadie la reciba
+	// todavía. Sin él no se puede validar nada: es una respuesta fuera de
+	// contrato. Alert no lo abre; solo comprueba que sea base64 para no
+	// transportar basura.
 	if _, err := base64.StdEncoding.DecodeString(parsed.PatEncIA); err != nil || parsed.PatEncIA == "" {
 		slog.Error("vehicle respondió sin un pat_enc_ia válido", "url", targetURL)
 		return domain.ResolvedOwners{}, fmt.Errorf("vehicle resolver: %w: url=%s: pat_enc_ia ausente o inválido", domain.ErrVehicleBadResponse, targetURL)
 	}
-	return domain.ResolvedOwners{OwnerIDs: ownerIDs, PatEncIA: parsed.PatEncIA}, nil
+
+	pendingRef, err := parsePendingRef(parsed.PendingRef)
+	if err != nil {
+		// No se loguea el valor: es la referencia de una patente.
+		slog.Error("vehicle respondió con un pending_ref inválido", "url", targetURL)
+		return domain.ResolvedOwners{}, fmt.Errorf("vehicle resolver: %w: url=%s: pending_ref inválido", domain.ErrVehicleBadResponse, targetURL)
+	}
+
+	return domain.ResolvedOwners{OwnerIDs: ownerIDs, PatEncIA: parsed.PatEncIA, PendingRef: pendingRef}, nil
+}
+
+// parsePendingRef traduce el pending_ref de la respuesta. Ausente es válido
+// (nil); presente debe ser un UUID distinto del nulo.
+func parsePendingRef(raw *string) (*uuid.UUID, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	ref, err := uuid.Parse(*raw)
+	if err != nil || ref == uuid.Nil {
+		return nil, errors.New("pending_ref no es un UUID válido")
+	}
+	return &ref, nil
 }

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -72,5 +73,20 @@ func TestNewEvidenceUploadedEvent_SinActorYConClavesSnakeCase(t *testing.T) {
 func TestEvidenceRole_Slug(t *testing.T) {
 	if EvidenceRoleDetail.Slug() != "detail" {
 		t.Errorf("Slug = %q, se esperaba detail", EvidenceRoleDetail.Slug())
+	}
+}
+
+func TestNewEvidenceUploadedEvent_SinPatEncIA_NoSeConstruye(t *testing.T) {
+	// Sin pat_enc_ia IA no puede validar: el evento nunca debe salir con el
+	// campo vacío, ni siquiera cuando la patente no tiene dueños.
+	_, err := NewEvidenceUploadedEvent(uuid.New(), EvidenceUploadedPayload{
+		AlertID:   uuid.New(),
+		AlertType: AlertTypeCrashed,
+		Bucket:    "bucket",
+		Evidence:  []EvidenceRef{{Role: EvidenceRoleGeneral, Index: 0, Key: "k", SHA256: strings.Repeat("a", 64)}},
+	}, time.Now().UTC())
+
+	if !errors.Is(err, ErrPatEncIAMissing) {
+		t.Fatalf("error = %v, se esperaba ErrPatEncIAMissing", err)
 	}
 }

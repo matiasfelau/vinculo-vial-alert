@@ -27,8 +27,16 @@ func cifrado(n int) []byte {
 	return bytes.Repeat([]byte{0xA5}, n)
 }
 
+const patEncDePrueba = "criptograma-hpke-hacia-vehicle"
+
 func metadata(attemptID uuid.UUID, alertType string) parteDePrueba {
-	raw, _ := json.Marshal(map[string]string{"attempt_id": attemptID.String(), "alert_type": alertType})
+	return metadataCon(map[string]string{"attempt_id": attemptID.String(), "alert_type": alertType, "pat_enc": patEncDePrueba})
+}
+
+// metadataCon arma la parte metadata con exactamente los campos dados, para
+// probar metadatas incompletas.
+func metadataCon(campos map[string]string) parteDePrueba {
+	raw, _ := json.Marshal(campos)
 	return parteDePrueba{nombre: "metadata", cuerpo: raw}
 }
 

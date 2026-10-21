@@ -29,6 +29,16 @@ type AlertModel struct {
 	// SeenAt es cuándo el primer destinatario abrió el chat. Lo conoce el
 	// emisor (sabe cuándo, nunca quién); es nulo hasta la primera lectura.
 	SeenAt *time.Time `gorm:"column:seen_at;type:timestamptz"`
+
+	// PendingRef y PendingUntil se completan solo si, al enviarse la alerta, la
+	// patente no tenía dueños: PendingRef es la referencia opaca de Vehicle a
+	// esa patente pendiente y PendingUntil hasta cuándo la alerta puede
+	// entregarse al primer dueño que la vincule. Se anulan al entregar o al
+	// vencer. Son internos: ninguna consulta de lectura los selecciona, así que
+	// no salen por el buzón, Enviados ni ninguna respuesta. El índice es parcial:
+	// casi todas las alertas los tienen en nulo.
+	PendingRef   *uuid.UUID `gorm:"column:pending_ref;type:uuid;index:idx_alerts_pending_ref,where:pending_ref IS NOT NULL"`
+	PendingUntil *time.Time `gorm:"column:pending_until;type:timestamptz"`
 }
 
 // TableName fija el nombre de tabla explícito.

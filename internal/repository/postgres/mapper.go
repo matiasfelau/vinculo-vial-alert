@@ -10,6 +10,9 @@ func toModel(alert *domain.AlertHistory) AlertModel {
 		AlertType: string(alert.AlertType),
 		Status:    string(alert.Status),
 		CreatedAt: alert.CreatedAt,
+
+		PendingRef:   alert.PendingRef,
+		PendingUntil: alert.PendingUntil,
 	}
 }
 
