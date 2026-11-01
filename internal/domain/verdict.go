@@ -29,6 +29,10 @@ const (
 	ReasonBurstMismatch      ReasonCode = "BURST_MISMATCH"
 	ReasonPlateMismatch      ReasonCode = "PLATE_MISMATCH"
 	ReasonEvidenceUnreadable ReasonCode = "EVIDENCE_UNREADABLE"
+	// ReasonValidationFailed lo emite IA cuando no pudo validar la evidencia de
+	// punta a punta (por ejemplo, no pudo abrir el pat_enc_ia o el original).
+	// Es RED y no es fraude: Identity no penaliza al emisor.
+	ReasonValidationFailed   ReasonCode = "VALIDATION_FAILED"
 	ReasonBurstUncertain     ReasonCode = "BURST_UNCERTAIN"
 	ReasonPlateFuzzy         ReasonCode = "PLATE_FUZZY"
 	ReasonPlateUnreadable    ReasonCode = "PLATE_UNREADABLE"
@@ -49,6 +53,7 @@ var reasonSeverity = map[ReasonCode]Verdict{
 	ReasonBurstMismatch:      VerdictRed,
 	ReasonPlateMismatch:      VerdictRed,
 	ReasonEvidenceUnreadable: VerdictRed,
+	ReasonValidationFailed:   VerdictRed,
 	ReasonBurstUncertain:     VerdictYellow,
 	ReasonPlateFuzzy:         VerdictYellow,
 	ReasonPlateUnreadable:    VerdictYellow,
@@ -115,7 +120,8 @@ type Resolution struct {
 type VerdictRepository interface {
 	// Activate pasa la alerta a ACTIVE con el veredicto, registra las
 	// imágenes redactadas, descarta las filas de los originales y encola
-	// alert.created (actor = emisor, owner_ids de sus destinatarios).
+	// alert.created (actor = emisor, owner_ids de sus destinatarios, que
+	// pueden ser ninguno: entonces owner_ids es []).
 	Activate(ctx context.Context, result ValidationResult, now time.Time) (Resolution, error)
 	// Reject pasa la alerta a REJECTED, borra sus destinatarios y su evidencia,
 	// anula el resultado de la validación y encola alert.rejected (actor =

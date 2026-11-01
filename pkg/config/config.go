@@ -49,6 +49,7 @@ type Config struct {
 	EvidenceRetention              time.Duration
 	SentRetention                  time.Duration
 	PendingTimeout                 time.Duration
+	PendingDelivery                time.Duration
 	SweeperInterval                time.Duration
 }
 
@@ -254,6 +255,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("PENDING_TIMEOUT_MINUTES inválido: debe ser mayor o igual a 1, vino %d", pendingTimeoutMinutes)
 	}
 	cfg.PendingTimeout = time.Duration(pendingTimeoutMinutes) * time.Minute
+
+	pendingDeliveryHours, err := strconv.Atoi(getEnvDefault("PENDING_DELIVERY_HOURS", "24"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PENDING_DELIVERY_HOURS inválido: %w", err)
+	}
+	if pendingDeliveryHours < 1 {
+		return Config{}, fmt.Errorf("PENDING_DELIVERY_HOURS inválido: debe ser mayor o igual a 1, vino %d", pendingDeliveryHours)
+	}
+	cfg.PendingDelivery = time.Duration(pendingDeliveryHours) * time.Hour
 
 	if cfg.SweeperInterval, err = parsePositiveMillis("SWEEPER_INTERVAL_MS", "60000"); err != nil {
 		return Config{}, err

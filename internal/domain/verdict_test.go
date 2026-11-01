@@ -19,6 +19,8 @@ func TestDeriveVerdict(t *testing.T) {
 		"varios amarillos son YELLOW":           {[]ReasonCode{ReasonPlateFuzzy, ReasonBurstUncertain, ReasonContextUncertain}, VerdictYellow},
 		"un código rojo es RED":                 {[]ReasonCode{ReasonNoVehicle}, VerdictRed},
 		"EVIDENCE_UNREADABLE es RED":            {[]ReasonCode{ReasonEvidenceUnreadable}, VerdictRed},
+		"VALIDATION_FAILED es RED":              {[]ReasonCode{ReasonValidationFailed}, VerdictRed},
+		"VALIDATION_FAILED gana sobre amarillo": {[]ReasonCode{ReasonPlateFuzzy, ReasonValidationFailed}, VerdictRed},
 		"rojo gana sobre amarillo":              {[]ReasonCode{ReasonPlateFuzzy, ReasonPlateMismatch}, VerdictRed},
 		"rojo gana aunque venga primero":        {[]ReasonCode{ReasonBurstMismatch, ReasonContextNotDetected}, VerdictRed},
 		"PLATE_UNREADABLE es amarillo, no rojo": {[]ReasonCode{ReasonPlateUnreadable}, VerdictYellow},
@@ -33,7 +35,7 @@ func TestDeriveVerdict(t *testing.T) {
 
 func TestReasonCode_IsKnown(t *testing.T) {
 	for _, code := range []ReasonCode{
-		ReasonNoVehicle, ReasonBurstMismatch, ReasonPlateMismatch, ReasonEvidenceUnreadable,
+		ReasonNoVehicle, ReasonBurstMismatch, ReasonPlateMismatch, ReasonEvidenceUnreadable, ReasonValidationFailed,
 		ReasonBurstUncertain, ReasonPlateFuzzy, ReasonPlateUnreadable, ReasonContextNotDetected, ReasonContextUncertain,
 	} {
 		if !code.IsKnown() {

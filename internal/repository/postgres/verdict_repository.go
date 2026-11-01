@@ -97,12 +97,10 @@ func (r *VerdictRepository) Activate(ctx context.Context, result domain.Validati
 			return err
 		}
 		resolution = domain.Resolution{Applied: true, OriginalKeys: originalKeys}
-		if len(owners) == 0 {
-			// Una alerta sin destinatarios no tiene a quién avisar; el intento
-			// garantiza al menos uno, así que esto no debería ocurrir.
-			return nil
-		}
 
+		// alert.created sale siempre, también sin destinatarios: una patente sin
+		// dueños todavía tiene una alerta válida, y el evento le avisa al
+		// emisor. Con owner_ids vacío Notification solo notifica al emisor.
 		event, err := domain.NewAlertCreatedEvent(uuid.New(), summary.IssuerID, result.AlertID, domain.AlertType(summary.AlertType), owners, now)
 		if err != nil {
 			return fmt.Errorf("error al construir alert.created: %w", err)

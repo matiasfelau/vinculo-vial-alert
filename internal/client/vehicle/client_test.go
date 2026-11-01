@@ -63,26 +63,6 @@ func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 	}
 }
 
-func TestClient_ResolveOwners_VacioCuandoNoHayDuenos(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resolveOwnerResponse{OwnerIDs: []string{}})
-	}))
-	defer server.Close()
-
-	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	resolved, err := client.ResolveOwners(context.Background(), "x", uuid.New())
-	if err != nil {
-		t.Fatalf("error inesperado: %v", err)
-	}
-	if len(resolved.OwnerIDs) != 0 {
-		t.Errorf("owners = %v, se esperaba vacío", resolved.OwnerIDs)
-	}
-	if resolved.PatEncIA != "" {
-		t.Errorf("pat_enc_ia = %q, se esperaba vacío cuando no hay dueños", resolved.PatEncIA)
-	}
-}
-
 func TestClient_ResolveOwners_TimeoutDevuelveErrVehicleUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
@@ -205,29 +185,6 @@ func TestClient_ResolveOwners_429CuentaComoIndisponibilidad(t *testing.T) {
 
 	if !errors.Is(err, domain.ErrVehicleUnavailable) {
 		t.Fatalf("error = %v, se esperaba ErrVehicleUnavailable: un 429 computa como falla", err)
-	}
-}
-
-func TestClient_ResolveOwners_ConDuenosSinPatEncIA_EsRespuestaInvalida(t *testing.T) {
-	for nombre, patEncIA := range map[string]string{
-		"ausente":         "",
-		"no es base64":    "@@@no-es-base64@@@",
-		"base64 inválido": "abc",
-	} {
-		t.Run(nombre, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(resolveOwnerResponse{OwnerIDs: []string{uuid.New().String()}, PatEncIA: patEncIA})
-			}))
-			defer server.Close()
-
-			client := NewClient(server.URL, time.Second, tokenDePrueba)
-			_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
-
-			if !errors.Is(err, domain.ErrVehicleBadResponse) {
-				t.Fatalf("error = %v, se esperaba ErrVehicleBadResponse", err)
-			}
-		})
 	}
 }
 

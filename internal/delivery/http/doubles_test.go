@@ -22,6 +22,8 @@ const (
 	testBucket         = "vinculo-vial-evidence-test"
 	retryAfterDePrueba = 7 * time.Second
 	testRetention      = 30 * 24 * time.Hour
+
+	testPendingDelivery = 24 * time.Hour
 )
 
 type mockRestrictions struct {
@@ -71,6 +73,36 @@ func (m *mockAttempts) Get(_ context.Context, id, issuerID uuid.UUID) (*domain.A
 		return nil, domain.ErrAttemptNotFound
 	}
 	return found, nil
+}
+
+// patEncIADePrueba es un pat_enc_ia base64 válido, como el que devuelve Vehicle.
+const patEncIADePrueba = "Y3JpcHRvZ3JhbWE="
+
+// resolverDePrueba devuelve lo configurado y registra lo recibido.
+type resolverDePrueba struct {
+	resolved domain.ResolvedOwners
+	err      error
+	calls    int
+	patEnc   string
+	alertID  uuid.UUID
+}
+
+func (m *resolverDePrueba) ResolveOwners(_ context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
+	m.calls++
+	m.patEnc, m.alertID = patEnc, alertID
+	return m.resolved, m.err
+}
+
+// conDuenos es la respuesta de Vehicle para una patente con dos dueños.
+func conDuenos() domain.ResolvedOwners {
+	return domain.ResolvedOwners{OwnerIDs: []uuid.UUID{uuid.New(), uuid.New()}, PatEncIA: patEncIADePrueba}
+}
+
+// sinDuenos es la respuesta de Vehicle para una patente sin dueños: trae igual
+// pat_enc_ia y la referencia de la patente pendiente.
+func sinDuenos() domain.ResolvedOwners {
+	ref := uuid.New()
+	return domain.ResolvedOwners{OwnerIDs: []uuid.UUID{}, PatEncIA: patEncIADePrueba, PendingRef: &ref}
 }
 
 // mockAlerts modela el consumo del intento: la primera CreatePending de cada
@@ -219,6 +251,7 @@ func (m *mockOwnerRepo) CreateReport(_ context.Context, _, ownerID uuid.UUID, re
 // testDeps agrupa los dobles con los que se arma el router completo.
 type testDeps struct {
 	restrictions *mockRestrictions
+	resolver     *resolverDePrueba
 	attempts     *mockAttempts
 	alerts       *mockAlerts
 	store        *mockStore
@@ -228,6 +261,7 @@ type testDeps struct {
 func nuevasDeps() *testDeps {
 	return &testDeps{
 		restrictions: &mockRestrictions{},
+		resolver:     &resolverDePrueba{resolved: conDuenos()},
 		attempts:     &mockAttempts{},
 		alerts:       &mockAlerts{},
 		store:        &mockStore{},
@@ -237,7 +271,7 @@ func nuevasDeps() *testDeps {
 
 func (d *testDeps) router() *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	alertService := alert.NewCreateAlertService(d.restrictions, d.attempts, d.alerts, d.store, testBucket, time.Second)
+	alertService := alert.NewCreateAlertService(d.restrictions, d.attempts, d.resolver, d.alerts, d.store, testBucket, time.Second, testPendingDelivery)
 	attemptService := attempt.NewCreateAttemptService(d.restrictions, d.attempts, 10*time.Minute)
 	return NewRouter(
 		NewAlertHandler(alertService, testMaxPartBytes, retryAfterDePrueba),

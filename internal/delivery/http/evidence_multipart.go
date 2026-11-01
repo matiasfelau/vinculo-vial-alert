@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -17,8 +18,8 @@ import (
 const (
 	partMetadata = "metadata"
 
-	// maxMetadataBytes acota la parte metadata: solo lleva un UUID y un tipo
-	// de alerta.
+	// maxMetadataBytes acota la parte metadata: solo lleva un UUID, un tipo de
+	// alerta y el criptograma de la patente (unos cientos de bytes).
 	maxMetadataBytes = 4 << 10
 
 	// multipartOverheadBytes cubre los delimitadores y los encabezados de las
@@ -39,16 +40,19 @@ var (
 	errAlertTypeOff     = errors.New("alert_type deshabilitado")
 )
 
-// alertMetadata es la parte metadata del multipart.
+// alertMetadata es la parte metadata del multipart. pat_enc es la patente
+// cifrada con HPKE hacia Vehicle: Alert la reenvía sin abrirla y no la guarda.
 type alertMetadata struct {
 	AttemptID string `json:"attempt_id"`
 	AlertType string `json:"alert_type"`
+	PatEnc    string `json:"pat_enc"`
 }
 
 // evidenceRequest es el resultado de leer el multipart completo.
 type evidenceRequest struct {
 	attemptID uuid.UUID
 	alertType domain.AlertType
+	patEnc    string
 	files     []domain.EvidenceUpload
 }
 
@@ -135,7 +139,15 @@ func readMetadata(part *multipart.Part) (evidenceRequest, error) {
 		return evidenceRequest{}, errInvalidAlertType
 	}
 
-	return evidenceRequest{attemptID: attemptID, alertType: alertType}, nil
+	// pat_enc es obligatorio: los dueños se resuelven al enviar la alerta. Su
+	// contenido no se valida ni se refleja en ningún error; si no es un
+	// criptograma válido, Vehicle lo rechaza y la respuesta es
+	// INVALID_PLATE_CRYPTOGRAM.
+	if strings.TrimSpace(metadata.PatEnc) == "" {
+		return evidenceRequest{}, fmt.Errorf("metadata sin pat_enc: %w", errInvalidEvidence)
+	}
+
+	return evidenceRequest{attemptID: attemptID, alertType: alertType, patEnc: metadata.PatEnc}, nil
 }
 
 // readPhoto lee el ciphertext de una foto con un límite de maxPartBytes: se

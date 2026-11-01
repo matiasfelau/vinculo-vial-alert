@@ -33,6 +33,11 @@ var ErrVehicleRejected = errors.New("el servicio de vehículos rechazó la solic
 // breaker y el handler lo mapea a 400.
 var ErrInvalidPlateCryptogram = errors.New("el criptograma o el formato de la patente es inválido")
 
+// ErrPatEncIAMissing indica que se intentó armar alert.evidence.uploaded sin el
+// criptograma hacia IA. Es un error de programación o una respuesta de Vehicle
+// fuera de contrato: el caso de uso lo corta antes de subir o persistir nada.
+var ErrPatEncIAMissing = errors.New("falta pat_enc_ia para pedir la validación a IA")
+
 // ErrIssuerUnderReview indica que el emisor está en revisión
 // (issuer_restrictions) y no puede crear alertas. El handler lo mapea a 403.
 var ErrIssuerUnderReview = errors.New("el emisor está en revisión")

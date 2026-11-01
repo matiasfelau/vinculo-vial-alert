@@ -1,6 +1,9 @@
-// Package alert orquesta el segundo paso de la creación de una alerta:
-// consumir el intento, subir los originales cifrados al almacén y registrar
-// la alerta en PENDING_VALIDATION junto con el pedido de validación a IA.
+// Package alert orquesta el segundo paso de la creación de una alerta: el
+// envío. Resuelve los dueños del vehículo contra Vehicle, consume el intento,
+// sube los originales cifrados al almacén y registra la alerta en
+// PENDING_VALIDATION junto con el pedido de validación a IA. Que la patente
+// tenga dueños o no es invisible para el emisor: el camino y la respuesta son
+// los mismos.
 package alert
 
 import (
@@ -27,11 +30,14 @@ import (
 const cleanupTimeout = 2 * time.Second
 
 // CreateAlertInput son los datos ya validados con los que se ejecuta el caso
-// de uso. Files son los ciphertext tal como llegaron: Alert nunca los lee.
+// de uso. PatEnc es el criptograma de la patente tal como llegó en el metadata:
+// se reenvía a Vehicle sin abrir. Files son los ciphertext tal como llegaron:
+// Alert nunca los lee.
 type CreateAlertInput struct {
 	IssuerID  uuid.UUID
 	AttemptID uuid.UUID
 	AlertType domain.AlertType
+	PatEnc    string
 	Files     []domain.EvidenceUpload
 }
 
@@ -43,27 +49,34 @@ type CreateAlertResult struct {
 
 // CreateAlertService implementa POST /api/v1/alerts.
 type CreateAlertService struct {
-	restrictions domain.RestrictionChecker
-	attempts     domain.AttemptRepository
-	alerts       domain.AlertRepository
-	store        domain.EvidenceStore
-	bucket       string
-	putBudget    time.Duration
-	now          func() time.Time
+	restrictions    domain.RestrictionChecker
+	attempts        domain.AttemptRepository
+	resolver        domain.OwnerResolver
+	alerts          domain.AlertRepository
+	store           domain.EvidenceStore
+	bucket          string
+	putBudget       time.Duration
+	pendingDelivery time.Duration
+	now             func() time.Time
 }
 
-// NewCreateAlertService construye el caso de uso. bucket viaja en el evento
-// para que IA sepa dónde leer; putBudget es el presupuesto total de los PUT
-// concurrentes (S3_PUT_TIMEOUT_MS).
-func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts domain.AttemptRepository, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget time.Duration) *CreateAlertService {
+// NewCreateAlertService construye el caso de uso. resolver consulta a Vehicle
+// (con su timeout y su circuit breaker); bucket viaja en el evento para que IA
+// sepa dónde leer; putBudget es el presupuesto total de los PUT concurrentes
+// (S3_PUT_TIMEOUT_MS); pendingDelivery es cuánto tiempo puede entregarse una
+// alerta de una patente sin dueños al primero que la vincule
+// (PENDING_DELIVERY_HOURS).
+func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts domain.AttemptRepository, resolver domain.OwnerResolver, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget, pendingDelivery time.Duration) *CreateAlertService {
 	return &CreateAlertService{
-		restrictions: restrictions,
-		attempts:     attempts,
-		alerts:       alerts,
-		store:        store,
-		bucket:       bucket,
-		putBudget:    putBudget,
-		now:          func() time.Time { return time.Now().UTC() },
+		restrictions:    restrictions,
+		attempts:        attempts,
+		resolver:        resolver,
+		alerts:          alerts,
+		store:           store,
+		bucket:          bucket,
+		putBudget:       putBudget,
+		pendingDelivery: pendingDelivery,
+		now:             func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -81,9 +94,18 @@ func (s *CreateAlertService) CheckIssuer(ctx context.Context, issuerID uuid.UUID
 	return nil
 }
 
-// Execute crea la alerta con su evidencia. Errores de dominio que devuelve:
+// Execute crea la alerta con su evidencia. El orden es deliberado: primero se
+// valida el intento y se consulta a Vehicle, y recién después se sube nada, así
+// que una falla de Vehicle o una respuesta sin pat_enc_ia corta antes de
+// escribir en el almacén o en la base. Errores de dominio que devuelve:
 //   - domain.ErrAttemptNotFound: el intento no existe o es de otro usuario.
 //   - domain.ErrAttemptExpired: el intento venció o lo consumió otra solicitud.
+//   - domain.ErrInvalidPlateCryptogram: Vehicle rechazó el criptograma o el
+//     formato de la patente.
+//   - domain.ErrVehicleUnavailable: Vehicle en timeout, inalcanzable o con el
+//     circuito abierto.
+//   - domain.ErrVehicleBadResponse / domain.ErrVehicleRejected: Vehicle
+//     respondió 5xx, algo inválido (incluido un pat_enc_ia ausente) u otro 4xx.
 //   - domain.ErrEvidenceUnavailable: el almacén falló, expiró o tiene el
 //     circuito abierto; lo subido se borra (best effort).
 //   - domain.ErrDatabaseUnavailable: la base no responde; lo subido se borra.
@@ -101,15 +123,32 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	// alert_id = attempt_id: ata el criptograma hacia IA (info del HPKE) al
 	// agregado.
 	alertID := attempt.ID
-	evidence, refs := s.describeEvidence(alertID, input.Files, now)
 
-	// El intento ya no trae los dueños ni pat_enc_ia (US-10): se resuelven al
-	// enviar la alerta, con el pat_enc del metadata. Hasta que ese paso exista,
-	// la alerta se crea sin destinatarios y sin criptograma hacia IA.
-	var (
-		owners   []uuid.UUID
-		patEncIA string
-	)
+	resolved, err := s.resolver.ResolveOwners(ctx, input.PatEnc, alertID)
+	if err != nil {
+		return CreateAlertResult{}, err
+	}
+	// Sin pat_enc_ia IA no puede validar la evidencia: alert.evidence.uploaded
+	// nunca sale sin él. Vehicle siempre lo devuelve, así que si falta es una
+	// respuesta fuera de contrato y se corta acá, antes del 202.
+	if resolved.PatEncIA == "" {
+		slog.Error("create alert service: Vehicle respondió sin pat_enc_ia", "alert_id", alertID)
+		return CreateAlertResult{}, fmt.Errorf("create alert service: %w: la respuesta no trae pat_enc_ia", domain.ErrVehicleBadResponse)
+	}
+	recipients := recipientsOf(resolved.OwnerIDs, input.IssuerID)
+	pendingRef, pendingUntil := s.pendingOf(resolved, now)
+
+	evidence, refs := s.describeEvidence(alertID, input.Files, now)
+	event, err := domain.NewEvidenceUploadedEvent(uuid.New(), domain.EvidenceUploadedPayload{
+		AlertID:   alertID,
+		AlertType: input.AlertType,
+		PatEncIA:  resolved.PatEncIA,
+		Bucket:    s.bucket,
+		Evidence:  refs,
+	}, now)
+	if err != nil {
+		return CreateAlertResult{}, fmt.Errorf("create alert service: error al construir alert.evidence.uploaded: %w", err)
+	}
 
 	if err := s.uploadOriginals(ctx, evidence, input.Files); err != nil {
 		var inUse *attemptInUseError
@@ -124,26 +163,16 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 		return CreateAlertResult{}, err
 	}
 
-	event, err := domain.NewEvidenceUploadedEvent(uuid.New(), domain.EvidenceUploadedPayload{
-		AlertID:   alertID,
-		AlertType: input.AlertType,
-		PatEncIA:  patEncIA,
-		Bucket:    s.bucket,
-		Evidence:  refs,
-	}, now)
-	if err != nil {
-		s.deleteUploaded(ctx, evidence)
-		return CreateAlertResult{}, fmt.Errorf("create alert service: error al construir alert.evidence.uploaded: %w", err)
-	}
-
 	alertRow := &domain.AlertHistory{
-		ID:        alertID,
-		IssuerID:  input.IssuerID,
-		AlertType: input.AlertType,
-		Status:    domain.AlertStatusPendingValidation,
-		CreatedAt: now,
+		ID:           alertID,
+		IssuerID:     input.IssuerID,
+		AlertType:    input.AlertType,
+		Status:       domain.AlertStatusPendingValidation,
+		CreatedAt:    now,
+		PendingRef:   pendingRef,
+		PendingUntil: pendingUntil,
 	}
-	if err := s.alerts.CreatePending(ctx, now, alertRow, owners, evidence, event); err != nil {
+	if err := s.alerts.CreatePending(ctx, now, alertRow, recipients, evidence, event); err != nil {
 		s.cleanupAfterFailedCreate(ctx, alertID, evidence, err)
 		if errors.Is(err, domain.ErrAttemptExpired) {
 			return CreateAlertResult{}, domain.ErrAttemptExpired
@@ -152,6 +181,41 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	}
 
 	return CreateAlertResult{AlertID: alertID, Status: domain.AlertStatusPendingValidation}, nil
+}
+
+// recipientsOf descarta al emisor de los dueños que devolvió Vehicle (nunca se
+// autonotifica) y los repetidos, que romperían el índice único de
+// destinatarios. Con la patente sin dueños, o con el emisor como único dueño,
+// devuelve una lista vacía: la alerta sigue el mismo camino igual.
+func recipientsOf(ownerIDs []uuid.UUID, issuerID uuid.UUID) []uuid.UUID {
+	recipients := make([]uuid.UUID, 0, len(ownerIDs))
+	seen := make(map[uuid.UUID]bool, len(ownerIDs))
+	for _, id := range ownerIDs {
+		if id == issuerID || seen[id] {
+			continue
+		}
+		seen[id] = true
+		recipients = append(recipients, id)
+	}
+	return recipients
+}
+
+// pendingOf devuelve la referencia pendiente y hasta cuándo puede entregarse la
+// alerta al primer dueño futuro. Solo una patente sin dueños puede tenerlos: si
+// Vehicle informa un pending_ref junto con dueños (incluido el propio emisor)
+// es una inconsistencia y se ignora, para no entregar nunca una alerta a un
+// desconocido cuando la patente ya tiene dueño. Sin pending_ref la alerta se
+// guarda igual, pero no se entregará a un dueño futuro.
+func (s *CreateAlertService) pendingOf(resolved domain.ResolvedOwners, now time.Time) (*uuid.UUID, *time.Time) {
+	if resolved.PendingRef == nil {
+		return nil, nil
+	}
+	if len(resolved.OwnerIDs) > 0 {
+		slog.Warn("create alert service: Vehicle informó una patente pendiente junto con dueños, se ignora")
+		return nil, nil
+	}
+	until := now.Add(s.pendingDelivery)
+	return resolved.PendingRef, &until
 }
 
 // describeEvidence arma, para cada foto, el registro de evidencia (con el

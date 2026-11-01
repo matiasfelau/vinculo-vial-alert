@@ -78,9 +78,11 @@ func TestParseValidationResult_YellowYRedCoherentes(t *testing.T) {
 		codes   []string
 		want    domain.Verdict
 	}{
-		"YELLOW":                      {"YELLOW", []string{"PLATE_FUZZY", "CONTEXT_UNCERTAIN"}, domain.VerdictYellow},
-		"RED":                         {"RED", []string{"PLATE_MISMATCH"}, domain.VerdictRed},
-		"RED con amarillos mezclados": {"RED", []string{"PLATE_FUZZY", "NO_VEHICLE"}, domain.VerdictRed},
+		"YELLOW":                                {"YELLOW", []string{"PLATE_FUZZY", "CONTEXT_UNCERTAIN"}, domain.VerdictYellow},
+		"RED":                                   {"RED", []string{"PLATE_MISMATCH"}, domain.VerdictRed},
+		"RED con amarillos mezclados":           {"RED", []string{"PLATE_FUZZY", "NO_VEHICLE"}, domain.VerdictRed},
+		"RED por VALIDATION_FAILED":             {"RED", []string{"VALIDATION_FAILED"}, domain.VerdictRed},
+		"RED por VALIDATION_FAILED y amarillos": {"RED", []string{"PLATE_UNREADABLE", "VALIDATION_FAILED"}, domain.VerdictRed},
 	}
 	for nombre, caso := range casos {
 		t.Run(nombre, func(t *testing.T) {
@@ -137,6 +139,8 @@ func TestParseValidationResult_PayloadsInvalidos_EnvuelvenErrInvalidMessage(t *t
 		"GREEN con un código rojo":                          func(p map[string]any) { p["reason_codes"] = []string{"NO_VEHICLE"} },
 		"YELLOW con un código rojo":                         func(p map[string]any) { p["verdict"], p["reason_codes"] = "YELLOW", []string{"PLATE_MISMATCH"} },
 		"RED sin códigos":                                   func(p map[string]any) { p["verdict"] = "RED" },
+		"VALIDATION_FAILED es RED, no GREEN":                func(p map[string]any) { p["reason_codes"] = []string{"VALIDATION_FAILED"} },
+		"VALIDATION_FAILED es RED, no YELLOW":               func(p map[string]any) { p["verdict"], p["reason_codes"] = "YELLOW", []string{"VALIDATION_FAILED"} },
 		"scores no es un objeto":                            func(p map[string]any) { p["scores"] = []int{1} },
 		"scores con un texto":                               func(p map[string]any) { p["scores"] = map[string]any{"ocr_confidence": "alto"} },
 		"model_versions con números":                        func(p map[string]any) { p["model_versions"] = map[string]any{"ocr": 3} },
