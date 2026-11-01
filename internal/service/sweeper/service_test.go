@@ -1,9 +1,12 @@
 package sweeper
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +39,11 @@ type mockRepo struct {
 	expireNow    time.Time
 	expireCalled bool
 
+	pendingCleared int64
+	pendingErr     error
+	pendingNow     time.Time
+	pendingCalled  bool
+
 	sentDeleted int64
 	sentErr     error
 	sentCutoff  time.Time
@@ -60,6 +68,12 @@ func (m *mockRepo) ExpirePending(_ context.Context, createdBefore, now time.Time
 	m.expireCutoff = createdBefore
 	m.expireNow = now
 	return m.expired, m.expireErr
+}
+
+func (m *mockRepo) ClearExpiredPending(_ context.Context, now time.Time) (int64, error) {
+	m.pendingCalled = true
+	m.pendingNow = now
+	return m.pendingCleared, m.pendingErr
 }
 
 func (m *mockRepo) DeleteExpiredSent(_ context.Context, createdBefore time.Time) (int64, error) {
@@ -426,5 +440,51 @@ func TestRun_EjecutaVueltasPeriodicas(t *testing.T) {
 	defer repo.mu.Unlock()
 	if repo.findCalls < 2 {
 		t.Errorf("vueltas = %d, se esperaban al menos 2", repo.findCalls)
+	}
+}
+
+func TestRunOnce_ReferenciasPendientes_AnulaLasVencidasConLaHoraActual(t *testing.T) {
+	repo := &mockRepo{pendingCleared: 3}
+
+	if err := nuevoSweeper(repo, &mockStore{}, true).RunOnce(context.Background()); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if !repo.pendingCalled || !repo.pendingNow.Equal(ahora) {
+		t.Errorf("llamada = %v, now = %v; se esperaba una llamada con %v", repo.pendingCalled, repo.pendingNow, ahora)
+	}
+}
+
+func TestRunOnce_ReferenciasPendientes_NoDependeDelAlmacenYUnaFallaNoCortaLasDemasReglas(t *testing.T) {
+	repo := &mockRepo{pendingErr: domain.ErrDatabaseUnavailable, rows: filas(2)}
+	store := &mockStore{}
+
+	err := nuevoSweeper(repo, store, true).RunOnce(context.Background())
+
+	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
+		t.Fatalf("error = %v, se esperaba que la falla de la regla llegara al resultado", err)
+	}
+	if !repo.sentCalled || len(repo.rowsDeleted) != 2 {
+		t.Errorf("enviados = %v, filas borradas = %d; las demás reglas igual corren", repo.sentCalled, len(repo.rowsDeleted))
+	}
+
+	repo = &mockRepo{}
+	if err := nuevoSweeper(repo, store, false).RunOnce(context.Background()); err != nil || !repo.pendingCalled {
+		t.Errorf("err = %v, llamada = %v; con el circuito de S3 abierto esta regla (solo base) igual corre", err, repo.pendingCalled)
+	}
+}
+
+func TestRunOnce_ReferenciasPendientes_ElLogLlevaSoloLaCantidad(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	if err := nuevoSweeper(&mockRepo{pendingCleared: 5}, &mockStore{}, true).RunOnce(context.Background()); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	if !strings.Contains(logs.String(), "cantidad=5") || strings.Contains(logs.String(), "pending_ref") {
+		t.Errorf("el log debía llevar solo la cantidad: %s", logs.String())
 	}
 }

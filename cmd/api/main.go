@@ -23,6 +23,7 @@ import (
 	inboxsvc "vinculo-vial-alert/internal/service/inbox"
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
 	ownersvc "vinculo-vial-alert/internal/service/owner"
+	pendingsvc "vinculo-vial-alert/internal/service/pending"
 	restrictionsvc "vinculo-vial-alert/internal/service/restriction"
 	sentsvc "vinculo-vial-alert/internal/service/sent"
 	sweepersvc "vinculo-vial-alert/internal/service/sweeper"
@@ -140,6 +141,19 @@ func main() {
 			})
 	}()
 
+	pendingService := pendingsvc.NewDeliverService(repopostgres.NewPendingRepository(db))
+	pendingClaimedStatus := &deliveryevents.ConnectionStatus{}
+	pendingClaimedDone := make(chan struct{})
+	go func() {
+		defer close(pendingClaimedDone)
+		deliveryevents.RunWithReconnect(consumersCtx, cfg.RabbitMQURL, cfg.PendingClaimedQueue, cfg.RabbitMQPrefetch, pendingClaimedStatus,
+			func(channel deliveryevents.ConsumerChannel) *deliveryevents.Consumer {
+				deadLetters := deliveryevents.NewAMQPDeadLetterPublisher(channel, cfg.RabbitMQPublishTimeout)
+				handler := deliveryevents.NewMessageHandler(deliveryevents.NewPendingClaimedProcessor(pendingService), deadLetters, cfg.PendingClaimedQueue, cfg.MaxRetries)
+				return deliveryevents.NewConsumer(channel, cfg.PendingClaimedQueue, handler)
+			})
+	}()
+
 	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention, cfg.SentRetention)
 	sweeperDone := make(chan struct{})
 	go func() {
@@ -162,6 +176,7 @@ func main() {
 		deliveryhttp.DependencyCheck{Name: "s3", Healthy: evidenceStore.Healthy},
 		deliveryhttp.DependencyCheck{Name: "verdict_consumer", Healthy: verdictStatus.Connected},
 		deliveryhttp.DependencyCheck{Name: "user_status_consumer", Healthy: userStatusStatus.Connected},
+		deliveryhttp.DependencyCheck{Name: "pending_claimed_consumer", Healthy: pendingClaimedStatus.Connected},
 	)
 	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
 	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, ownerHandler, inboxHandler, sentHandler, healthHandler, readyHandler, depsHandler)
@@ -207,6 +222,12 @@ func main() {
 	case <-userStatusDone:
 	case <-ctx.Done():
 		log.Println("el consumidor de estados de usuario no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
+	}
+
+	select {
+	case <-pendingClaimedDone:
+	case <-ctx.Done():
+		log.Println("el consumidor de vinculaciones pendientes no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
 	}
 
 	select {

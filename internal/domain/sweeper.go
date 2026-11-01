@@ -31,6 +31,11 @@ type SweeperRepository interface {
 	// createdBefore (la ventana de retención de Enviados) y devuelve cuántas.
 	// Las ACTIVE y las PENDING_VALIDATION no se tocan.
 	DeleteExpiredSent(ctx context.Context, createdBefore time.Time) (int64, error)
+	// ClearExpiredPending anula pending_ref y pending_until de las alertas cuyo
+	// pending_until ya pasó (pending_until <= now) y devuelve cuántas. Pasado ese
+	// plazo la alerta ya no se entrega a un dueño futuro; sigue existiendo para
+	// el emisor en Enviados. No toca el estado ni los destinatarios.
+	ClearExpiredPending(ctx context.Context, now time.Time) (int64, error)
 	// FindExpiredRedacted devuelve hasta limit filas REDACTED de alertas
 	// validadas antes de validatedBefore, las más viejas primero.
 	FindExpiredRedacted(ctx context.Context, validatedBefore time.Time, limit int) ([]ExpiredRedacted, error)
