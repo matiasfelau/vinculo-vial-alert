@@ -2,191 +2,573 @@ package alert
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"vinculo-vial-alert/internal/domain"
 )
 
-type mockRepo struct {
-	created *domain.AlertHistory
+const (
+	testBucket    = "vinculo-vial-evidence-test"
+	testPutBudget = time.Second
+
+	testPendingDelivery = 24 * time.Hour
+
+	patEncDePrueba = "criptograma-hpke-hacia-vehicle"
+
+	patEncIATest = "Y3JpcHRvZ3JhbWEtaWE="
+)
+
+var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+
+type mockRestrictions struct {
+	underReview bool
+	err         error
+}
+
+func (m *mockRestrictions) IsUnderReview(context.Context, uuid.UUID) (bool, error) {
+	return m.underReview, m.err
+}
+
+type mockAttempts struct {
+	attempt *domain.Attempt
 	err     error
+	gotID   uuid.UUID
+	gotUser uuid.UUID
 }
 
-func (m *mockRepo) Create(ctx context.Context, alert *domain.AlertHistory) error {
-	m.created = alert
-	return m.err
-}
+func (m *mockAttempts) Upsert(context.Context, *domain.Attempt) error { return nil }
 
-type mockResolver struct {
-	ownerIDs []uuid.UUID
-	err      error
-	patEnc   string
-}
-
-func (m *mockResolver) ResolveOwners(ctx context.Context, patEnc string) ([]uuid.UUID, error) {
-	m.patEnc = patEnc
-	return m.ownerIDs, m.err
-}
-
-type mockPublisher struct {
-	event  *domain.AlertCreatedEvent
-	err    error
-	called bool
-}
-
-func (m *mockPublisher) PublishAlertCreated(ctx context.Context, event domain.AlertCreatedEvent) error {
-	m.called = true
-	m.event = &event
-	return m.err
-}
-
-func TestExecute_ErrorDelResolver_NoPersisteNiPublica(t *testing.T) {
-	repo := &mockRepo{}
-	resolver := &mockResolver{err: domain.ErrVehicleUnavailable}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
-
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed, PatEnc: "x",
-	})
-
-	if !errors.Is(err, domain.ErrVehicleUnavailable) {
-		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable", err)
+func (m *mockAttempts) Get(_ context.Context, id, issuerID uuid.UUID) (*domain.Attempt, error) {
+	m.gotID, m.gotUser = id, issuerID
+	if m.err != nil {
+		return nil, m.err
 	}
-	if repo.created != nil {
-		t.Error("no debía persistirse el historial si Vehicle no está disponible")
-	}
-	if publisher.called {
-		t.Error("no debía publicarse el evento si Vehicle no está disponible")
-	}
+	return m.attempt, nil
 }
 
-func TestExecute_OwnerIDsVacio_PersisteYNoPublica(t *testing.T) {
-	repo := &mockRepo{}
-	resolver := &mockResolver{ownerIDs: []uuid.UUID{}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+// mockAlerts modela el consumo del intento: la primera CreatePending gana y
+// las siguientes reciben ErrAttemptExpired, como el DELETE condicional real.
+type mockAlerts struct {
+	mu          sync.Mutex
+	err         error
+	existsErr   error
+	consumed    bool
+	created     int
+	alert       *domain.AlertHistory
+	owners      []uuid.UUID
+	evidence    []domain.Evidence
+	event       domain.OutboxEvent
+	existsCalls int
+	onCreate    func()
+}
+
+func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, event domain.OutboxEvent) error {
+	if m.onCreate != nil {
+		m.onCreate()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return m.err
+	}
+	if m.consumed {
+		return domain.ErrAttemptExpired
+	}
+	m.consumed = true
+	m.created++
+	m.alert, m.owners, m.evidence, m.event = alert, owners, evidence, event
+	return nil
+}
+
+func (m *mockAlerts) Exists(context.Context, uuid.UUID) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.existsCalls++
+	if m.existsErr != nil {
+		return false, m.existsErr
+	}
+	return m.created > 0, nil
+}
+
+// mockStore es un almacén en memoria con fallas configurables por clave.
+type mockStore struct {
+	mu       sync.Mutex
+	objects  map[string][]byte
+	tags     map[string]domain.EvidenceStatus
+	failKeys map[string]error
+	block    bool
+	deleted  []string
+	puts     int
+	barrier  *sync.WaitGroup
+}
+
+func newMockStore() *mockStore {
+	return &mockStore{objects: map[string][]byte{}, tags: map[string]domain.EvidenceStatus{}, failKeys: map[string]error{}}
+}
+
+func (m *mockStore) Put(ctx context.Context, key string, body []byte, status domain.EvidenceStatus) error {
+	m.mu.Lock()
+	m.puts++
+	barrier, block, failure := m.barrier, m.block, m.failKeys[key]
+	m.mu.Unlock()
+
+	if barrier != nil {
+		barrier.Done()
+		barrier.Wait()
+	}
+	if block {
+		<-ctx.Done()
+		return domain.ErrEvidenceUnavailable
+	}
+	if failure != nil {
+		return failure
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.objects[key] = body
+	m.tags[key] = status
+	return nil
+}
+
+func (m *mockStore) Get(context.Context, string) (domain.EvidenceObject, error) {
+	return domain.EvidenceObject{}, errors.New("no usado")
+}
+
+func (m *mockStore) Tag(context.Context, string, domain.EvidenceStatus) error { return nil }
+
+func (m *mockStore) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleted = append(m.deleted, key)
+	delete(m.objects, key)
+	return nil
+}
+
+func (m *mockStore) deletedKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.deleted...)
+}
+
+type fixture struct {
+	issuerID uuid.UUID
+	attempt  *domain.Attempt
+	attempts *mockAttempts
+	resolver *mockResolver
+	alerts   *mockAlerts
+	store    *mockStore
+	svc      *CreateAlertService
+}
+
+func nuevoFixture(t *testing.T) *fixture {
+	t.Helper()
 
 	issuerID := uuid.New()
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: issuerID, AlertType: domain.AlertTypeParkedOnGarage, PatEnc: "x",
-	})
+	attempt := &domain.Attempt{
+		ID:        uuid.New(),
+		IssuerID:  issuerID,
+		ExpiresAt: ahora.Add(5 * time.Minute),
+		CreatedAt: ahora.Add(-5 * time.Minute),
+	}
+	f := &fixture{
+		issuerID: issuerID,
+		attempt:  attempt,
+		attempts: &mockAttempts{attempt: attempt},
+		resolver: &mockResolver{resolved: domain.ResolvedOwners{OwnerIDs: []uuid.UUID{uuid.New(), uuid.New()}, PatEncIA: patEncIATest}},
+		alerts:   &mockAlerts{},
+		store:    newMockStore(),
+	}
+	f.svc = NewCreateAlertService(&mockRestrictions{}, f.attempts, f.resolver, f.alerts, f.store, testBucket, testPutBudget, testPendingDelivery)
+	f.svc.now = func() time.Time { return ahora }
+	return f
+}
 
+func (f *fixture) input(files ...domain.EvidenceUpload) CreateAlertInput {
+	if len(files) == 0 {
+		files = fotosDeChoque()
+	}
+	return CreateAlertInput{IssuerID: f.issuerID, AttemptID: f.attempt.ID, AlertType: domain.AlertTypeCrashed, PatEnc: patEncDePrueba, Files: files}
+}
+
+func fotosDeChoque() []domain.EvidenceUpload {
+	return []domain.EvidenceUpload{
+		{Role: domain.EvidenceRoleGeneral, Index: 0, Ciphertext: []byte("cifrado-general")},
+		{Role: domain.EvidenceRolePlate, Index: 0, Ciphertext: []byte("cifrado-patente")},
+		{Role: domain.EvidenceRoleDetail, Index: 0, Ciphertext: []byte("cifrado-detalle-0")},
+		{Role: domain.EvidenceRoleDetail, Index: 1, Ciphertext: []byte("cifrado-detalle-1")},
+	}
+}
+
+func claveEsperada(alertID uuid.UUID, nombre string) string {
+	return "alerts/" + alertID.String() + "/original/" + nombre + ".bin"
+}
+
+func TestCheckIssuer(t *testing.T) {
+	casos := map[string]struct {
+		restrictions *mockRestrictions
+		want         error
+	}{
+		"emisor activo":                        {&mockRestrictions{}, nil},
+		"emisor en revisión":                   {&mockRestrictions{underReview: true}, domain.ErrIssuerUnderReview},
+		"no se puede consultar: falla cerrado": {&mockRestrictions{err: domain.ErrDatabaseUnavailable}, domain.ErrDatabaseUnavailable},
+	}
+	for nombre, caso := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			svc := NewCreateAlertService(caso.restrictions, &mockAttempts{}, &mockResolver{}, &mockAlerts{}, newMockStore(), testBucket, testPutBudget, testPendingDelivery)
+
+			err := svc.CheckIssuer(context.Background(), uuid.New())
+
+			if !errors.Is(err, caso.want) && !(caso.want == nil && err == nil) {
+				t.Fatalf("error = %v, se esperaba %v", err, caso.want)
+			}
+		})
+	}
+}
+
+func TestExecute_CasoExitoso_SubeLosOriginalesYRegistraLaAlertaPendiente(t *testing.T) {
+	f := nuevoFixture(t)
+
+	result, err := f.svc.Execute(context.Background(), f.input())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
-	if repo.created == nil {
-		t.Fatal("debía persistirse el historial para trazabilidad aunque no haya destinatarios")
+
+	if result.AlertID != f.attempt.ID || result.Status != domain.AlertStatusPendingValidation {
+		t.Errorf("resultado = %+v, se esperaba alert_id = attempt_id y PENDING_VALIDATION", result)
 	}
-	if repo.created.IssuerID != issuerID {
-		t.Errorf("issuer_id persistido = %v, se esperaba %v", repo.created.IssuerID, issuerID)
+	if f.attempts.gotID != f.attempt.ID || f.attempts.gotUser != f.issuerID {
+		t.Errorf("el intento se debe buscar por id Y por emisor: id=%v emisor=%v", f.attempts.gotID, f.attempts.gotUser)
 	}
-	if publisher.called {
-		t.Error("no debía publicarse un evento sin destinatarios")
+
+	esperados := map[string]string{
+		claveEsperada(f.attempt.ID, "general-0"): "cifrado-general",
+		claveEsperada(f.attempt.ID, "plate-0"):   "cifrado-patente",
+		claveEsperada(f.attempt.ID, "detail-0"):  "cifrado-detalle-0",
+		claveEsperada(f.attempt.ID, "detail-1"):  "cifrado-detalle-1",
+	}
+	if len(f.store.objects) != len(esperados) {
+		t.Fatalf("objetos subidos = %d, se esperaban %d", len(f.store.objects), len(esperados))
+	}
+	for clave, contenido := range esperados {
+		if string(f.store.objects[clave]) != contenido {
+			t.Errorf("objeto %s = %q, se esperaba el ciphertext tal cual llegó", clave, f.store.objects[clave])
+		}
+		if f.store.tags[clave] != domain.EvidenceStatusPending {
+			t.Errorf("tag de %s = %q, se esperaba pending", clave, f.store.tags[clave])
+		}
+	}
+	if len(f.store.deletedKeys()) != 0 {
+		t.Errorf("en el caso feliz no se borra nada: %v", f.store.deletedKeys())
 	}
 }
 
-func TestExecute_IssuerEntreLosDuenos_SeFiltraAntesDePublicar(t *testing.T) {
-	repo := &mockRepo{}
-	issuerID := uuid.New()
-	otroOwner := uuid.New()
-	resolver := &mockResolver{ownerIDs: []uuid.UUID{issuerID, otroOwner}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+func TestExecute_CasoExitoso_PersisteLaAlertaConDestinatariosYEvidencia(t *testing.T) {
+	f := nuevoFixture(t)
 
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: issuerID, AlertType: domain.AlertTypeCrashed, PatEnc: "x",
-	})
-
-	if err != nil {
+	if _, err := f.svc.Execute(context.Background(), f.input()); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
-	if !publisher.called {
-		t.Fatal("debía publicarse el evento para el resto de los dueños")
+
+	got := f.alerts.alert
+	if got.ID != f.attempt.ID || got.IssuerID != f.issuerID || got.AlertType != domain.AlertTypeCrashed {
+		t.Errorf("alerta = %+v", got)
 	}
-	if len(publisher.event.OwnerIDs) != 1 || publisher.event.OwnerIDs[0] != otroOwner {
-		t.Errorf("owner_ids publicados = %v, se esperaba solo [%v]", publisher.event.OwnerIDs, otroOwner)
+	if got.Status != domain.AlertStatusPendingValidation {
+		t.Errorf("status = %q, se esperaba PENDING_VALIDATION", got.Status)
 	}
-	for _, id := range publisher.event.OwnerIDs {
-		if id == issuerID {
-			t.Error("el emisor no debe recibir su propia alerta")
+	if !got.CreatedAt.Equal(ahora) {
+		t.Errorf("created_at = %v, se esperaba %v", got.CreatedAt, ahora)
+	}
+
+	if len(f.alerts.evidence) != 4 {
+		t.Fatalf("filas de evidencia = %d, se esperaban 4", len(f.alerts.evidence))
+	}
+	sum := sha256.Sum256([]byte("cifrado-general"))
+	for _, item := range f.alerts.evidence {
+		if item.Kind != domain.EvidenceKindOriginal || item.AlertID != f.attempt.ID {
+			t.Errorf("evidencia = %+v", item)
+		}
+		if item.Role == domain.EvidenceRoleGeneral && item.SHA256 != hex.EncodeToString(sum[:]) {
+			t.Errorf("sha256 = %s, se esperaba el del ciphertext %s", item.SHA256, hex.EncodeToString(sum[:]))
+		}
+		if len(item.SHA256) != 64 {
+			t.Errorf("sha256 de %s debe ser hex de 64 caracteres: %q", item.S3Key, item.SHA256)
 		}
 	}
 }
 
-func TestExecute_IssuerEsUnicoDueno_TrasFiltrarNoPublica(t *testing.T) {
-	repo := &mockRepo{}
-	issuerID := uuid.New()
-	resolver := &mockResolver{ownerIDs: []uuid.UUID{issuerID}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+func TestExecute_CasoExitoso_EncolaAlertEvidenceUploadedSinActorNiIdentificadores(t *testing.T) {
+	f := nuevoFixture(t)
 
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: issuerID, AlertType: domain.AlertTypeCrashed, PatEnc: "x",
-	})
-
-	if err != nil {
+	if _, err := f.svc.Execute(context.Background(), f.input()); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
-	if repo.created == nil {
-		t.Fatal("debía persistirse el historial")
+
+	event := f.alerts.event
+	if event.EventType != "alert.evidence.uploaded" {
+		t.Errorf("event_type = %q, se esperaba alert.evidence.uploaded", event.EventType)
 	}
-	if publisher.called {
-		t.Error("no debía publicarse un evento sin destinatarios tras filtrar al emisor")
+	if event.Actor != nil {
+		t.Errorf("actor = %v, se esperaba nil: IA no recibe identificadores de usuario", event.Actor)
+	}
+
+	var payload struct {
+		AlertID   string `json:"alert_id"`
+		AlertType string `json:"alert_type"`
+		PatEncIA  string `json:"pat_enc_ia"`
+		Bucket    string `json:"bucket"`
+		Evidence  []struct {
+			Role   string `json:"role"`
+			Index  int    `json:"index"`
+			Key    string `json:"key"`
+			SHA256 string `json:"sha256"`
+		} `json:"evidence"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("payload inválido: %v", err)
+	}
+	if payload.AlertID != f.attempt.ID.String() || payload.AlertType != "CRASHED" {
+		t.Errorf("payload = %+v", payload)
+	}
+	if payload.Bucket != testBucket {
+		t.Errorf("bucket = %q, se esperaba %q", payload.Bucket, testBucket)
+	}
+	if len(payload.Evidence) != 4 {
+		t.Fatalf("evidence = %d, se esperaban 4", len(payload.Evidence))
+	}
+	if payload.Evidence[0].Role != "GENERAL" || payload.Evidence[0].Key != claveEsperada(f.attempt.ID, "general-0") {
+		t.Errorf("evidence[0] = %+v", payload.Evidence[0])
+	}
+	if payload.Evidence[3].Role != "DETAIL" || payload.Evidence[3].Index != 1 {
+		t.Errorf("evidence[3] = %+v", payload.Evidence[3])
+	}
+
+	raw := string(event.Payload)
+	if strings.Contains(raw, f.issuerID.String()) {
+		t.Error("el emisor no puede figurar en el payload")
+	}
+	if strings.Contains(raw, "http://") || strings.Contains(raw, "https://") {
+		t.Error("por el bus viajan claves, nunca URLs")
 	}
 }
 
-func TestExecute_ReenviaPatEncSinModificar(t *testing.T) {
-	repo := &mockRepo{}
-	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+func TestExecute_IntentoInexistenteOAjeno_NoSubeNada(t *testing.T) {
+	f := nuevoFixture(t)
+	f.attempts.err = domain.ErrAttemptNotFound
 
-	patEnc := "criptograma-hpke-de-prueba"
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed, PatEnc: patEnc,
-	})
-	if err != nil {
-		t.Fatalf("error inesperado: %v", err)
+	_, err := f.svc.Execute(context.Background(), f.input())
+
+	if !errors.Is(err, domain.ErrAttemptNotFound) {
+		t.Fatalf("error = %v, se esperaba ErrAttemptNotFound", err)
 	}
-	if resolver.patEnc != patEnc {
-		t.Errorf("pat_enc reenviado al resolver = %q, se esperaba %q", resolver.patEnc, patEnc)
+	if f.store.puts != 0 || f.alerts.created != 0 {
+		t.Error("sin intento no se sube ni se persiste nada")
 	}
 }
 
-func TestExecute_FalloAlPublicar_NoPropagaError(t *testing.T) {
-	repo := &mockRepo{}
-	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{err: errors.New("rabbitmq no disponible")}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+func TestExecute_IntentoVencido_NoSubeNada(t *testing.T) {
+	for nombre, expira := range map[string]time.Time{
+		"vencido hace un rato":    ahora.Add(-time.Minute),
+		"vence exactamente ahora": ahora,
+	} {
+		t.Run(nombre, func(t *testing.T) {
+			f := nuevoFixture(t)
+			f.attempt.ExpiresAt = expira
 
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed, PatEnc: "x",
-	})
-	if err != nil {
-		t.Fatalf("se esperaba 202 igual aunque falle el publish (MVP), obtuvo error: %v", err)
-	}
-	if repo.created == nil {
-		t.Fatal("debía persistirse el historial antes de intentar publicar")
+			_, err := f.svc.Execute(context.Background(), f.input())
+
+			if !errors.Is(err, domain.ErrAttemptExpired) {
+				t.Fatalf("error = %v, se esperaba ErrAttemptExpired (expires_at <= now)", err)
+			}
+			if f.store.puts != 0 || f.alerts.created != 0 {
+				t.Error("un intento vencido no sube ni persiste nada")
+			}
+		})
 	}
 }
 
-func TestExecute_ErrorAlPersistir_DevuelveErrorYNoPublica(t *testing.T) {
-	repo := &mockRepo{err: errors.New("db caída")}
-	resolver := &mockResolver{ownerIDs: []uuid.UUID{uuid.New()}}
-	publisher := &mockPublisher{}
-	svc := NewCreateAlertService(repo, resolver, publisher)
+func TestExecute_FalloParcialDeS3_BorraLoSubidoYResponde503(t *testing.T) {
+	f := nuevoFixture(t)
+	f.store.failKeys[claveEsperada(f.attempt.ID, "plate-0")] = domain.ErrEvidenceUnavailable
 
-	err := svc.Execute(context.Background(), CreateAlertInput{
-		IssuerID: uuid.New(), AlertType: domain.AlertTypeCrashed, PatEnc: "x",
-	})
-	if err == nil {
-		t.Fatal("se esperaba error al fallar la persistencia")
+	_, err := f.svc.Execute(context.Background(), f.input())
+
+	if !errors.Is(err, domain.ErrEvidenceUnavailable) {
+		t.Fatalf("error = %v, se esperaba ErrEvidenceUnavailable (503)", err)
 	}
-	if publisher.called {
-		t.Error("no debía publicarse si la persistencia falló")
+	if f.alerts.created != 0 {
+		t.Error("no debe persistirse la alerta si falló un PUT")
+	}
+	if len(f.store.deletedKeys()) != 4 {
+		t.Errorf("claves borradas = %v, se esperaban las 4 intentadas (un PUT cancelado pudo completarse igual)", f.store.deletedKeys())
+	}
+	if len(f.store.objects) != 0 {
+		t.Errorf("no debe quedar ningún objeto en el almacén: %v", f.store.objects)
+	}
+}
+
+func TestExecute_LosPutsSonConcurrentes(t *testing.T) {
+	f := nuevoFixture(t)
+	files := fotosDeChoque()
+	// Cada Put espera a que los demás hayan entrado: si fueran secuenciales,
+	// el primero esperaría para siempre.
+	barrier := &sync.WaitGroup{}
+	barrier.Add(len(files))
+	f.store.barrier = barrier
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.Execute(context.Background(), f.input(files...))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("error inesperado: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("los PUT no corren en paralelo")
+	}
+}
+
+func TestExecute_S3QueNoResponde_RespetaElPresupuestoTotalDeLosPut(t *testing.T) {
+	f := nuevoFixture(t)
+	f.store.block = true
+	f.svc.putBudget = 30 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.Execute(context.Background(), f.input())
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, domain.ErrEvidenceUnavailable) {
+			t.Fatalf("error = %v, se esperaba ErrEvidenceUnavailable", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("el presupuesto de los PUT no se respetó")
+	}
+	if f.alerts.created != 0 {
+		t.Error("no debe persistirse la alerta")
+	}
+}
+
+func TestExecute_FallaLaTransaccion_BorraLosObjetos(t *testing.T) {
+	f := nuevoFixture(t)
+	f.alerts.err = domain.ErrDatabaseUnavailable
+
+	_, err := f.svc.Execute(context.Background(), f.input())
+
+	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
+		t.Fatalf("error = %v, se esperaba ErrDatabaseUnavailable", err)
+	}
+	if len(f.store.deletedKeys()) != 4 || len(f.store.objects) != 0 {
+		t.Errorf("claves borradas = %v, objetos restantes = %d: la falla de la TX debe limpiar el almacén", f.store.deletedKeys(), len(f.store.objects))
+	}
+}
+
+func TestExecute_IntentoConsumidoEnLaTransaccion_BorraLosObjetosSiLaAlertaNoExiste(t *testing.T) {
+	// El intento venció entre el SELECT y el DELETE condicional, y no hay
+	// ninguna alerta ganadora: los objetos subidos quedan huérfanos.
+	f := nuevoFixture(t)
+	f.alerts.consumed = true // CreatePending devuelve ErrAttemptExpired, created = 0
+
+	_, err := f.svc.Execute(context.Background(), f.input())
+
+	if !errors.Is(err, domain.ErrAttemptExpired) {
+		t.Fatalf("error = %v, se esperaba ErrAttemptExpired (410)", err)
+	}
+	if len(f.store.deletedKeys()) != 4 {
+		t.Errorf("claves borradas = %v, se esperaba limpiar los 4 objetos huérfanos", f.store.deletedKeys())
+	}
+}
+
+func TestExecute_CarreraDosPostConElMismoIntento_UnoGanaYElOtroRecibe410SinBorrarLaEvidenciaDelGanador(t *testing.T) {
+	f := nuevoFixture(t)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = f.svc.Execute(context.Background(), f.input())
+		}()
+	}
+	wg.Wait()
+
+	exitos, vencidos := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			exitos++
+		case errors.Is(err, domain.ErrAttemptExpired):
+			vencidos++
+		default:
+			t.Fatalf("error inesperado: %v", err)
+		}
+	}
+	if exitos != 1 || vencidos != 1 {
+		t.Fatalf("éxitos = %d, 410 = %d; se esperaba 1 y 1", exitos, vencidos)
+	}
+	if f.alerts.created != 1 {
+		t.Errorf("alertas creadas = %d, se esperaba 1", f.alerts.created)
+	}
+	// Ambas solicitudes usan las mismas claves: la perdedora no puede borrar
+	// lo que la alerta ganadora referencia.
+	if len(f.store.deletedKeys()) != 0 {
+		t.Errorf("la perdedora borró %v, pero la alerta ganadora existe y referencia esas claves", f.store.deletedKeys())
+	}
+	if len(f.store.objects) != 4 {
+		t.Errorf("objetos en el almacén = %d, se esperaban los 4 de la alerta ganadora", len(f.store.objects))
+	}
+}
+
+func TestExecute_SiNoSePuedeVerificarSiLaAlertaExiste_NoBorraLaEvidencia(t *testing.T) {
+	f := nuevoFixture(t)
+	f.alerts.consumed = true
+	f.alerts.existsErr = domain.ErrDatabaseUnavailable
+
+	_, err := f.svc.Execute(context.Background(), f.input())
+
+	if !errors.Is(err, domain.ErrAttemptExpired) {
+		t.Fatalf("error = %v, se esperaba ErrAttemptExpired", err)
+	}
+	if len(f.store.deletedKeys()) != 0 {
+		t.Errorf("ante la duda no se borra: pudo ganar otra solicitud con esas claves (%v)", f.store.deletedKeys())
+	}
+}
+
+func TestExecute_LaLimpiezaSobreviveALaCancelacionDelEmisor(t *testing.T) {
+	f := nuevoFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	// El emisor corta la conexión justo mientras se registra la alerta, que
+	// además falla.
+	f.alerts.onCreate = cancel
+	f.alerts.err = domain.ErrDatabaseUnavailable
+
+	_, _ = f.svc.Execute(ctx, f.input())
+
+	if len(f.store.objects) != 0 {
+		t.Errorf("objetos restantes = %d: la limpieza no debe heredar la cancelación del request", len(f.store.objects))
+	}
+	if len(f.store.deletedKeys()) != 4 {
+		t.Errorf("claves borradas = %v, se esperaban 4", f.store.deletedKeys())
 	}
 }

@@ -2,6 +2,9 @@ services:
   alert:
     build: .
     container_name: vinculo-vial-alert
+    # Mayor que SHUTDOWN_TIMEOUT_MS (8 s por defecto): el drenado debe terminar
+    # antes de que el orquestador mande SIGKILL.
+    stop_grace_period: 10s
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     environment:
@@ -12,6 +15,27 @@ services:
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?la variable INTERNAL_SERVICE_TOKEN es obligatoria en .env}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@vinculo-vial-rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-vvi.topic.exchange}
+      VERDICT_QUEUE: ${VERDICT_QUEUE:-alert.ia-evidence-validated.q}
+      USER_STATUS_QUEUE: ${USER_STATUS_QUEUE:-alert.user-status-changed.q}
+      RABBITMQ_PREFETCH: ${RABBITMQ_PREFETCH:-10}
+      MAX_RETRIES: ${MAX_RETRIES:-5}
+      S3_REGION: ${S3_REGION:?la variable S3_REGION es obligatoria en .env}
+      EVIDENCE_BUCKET: ${EVIDENCE_BUCKET:?la variable EVIDENCE_BUCKET es obligatoria en .env}
+      EVIDENCE_RETENTION_DAYS: ${EVIDENCE_RETENTION_DAYS:-30}
+      PENDING_TIMEOUT_MINUTES: ${PENDING_TIMEOUT_MINUTES:-1440}
+      PENDING_DELIVERY_HOURS: ${PENDING_DELIVERY_HOURS:-24}
+      SENT_RETENTION_DAYS: ${SENT_RETENTION_DAYS:-30}
+      SWEEPER_INTERVAL_MS: ${SWEEPER_INTERVAL_MS:-60000}
+      EVIDENCE_MAX_PART_BYTES: ${EVIDENCE_MAX_PART_BYTES:-1048576}
+      S3_PUT_TIMEOUT_MS: ${S3_PUT_TIMEOUT_MS:-5000}
+      S3_GET_TIMEOUT_MS: ${S3_GET_TIMEOUT_MS:-5000}
+      S3_BREAKER_FAILURE_THRESHOLD: ${S3_BREAKER_FAILURE_THRESHOLD:-5}
+      S3_BREAKER_OPEN_DURATION_MS: ${S3_BREAKER_OPEN_DURATION_MS:-30000}
+      # Credenciales de AWS: cadena estándar del SDK. En local vienen de .env;
+      # en producción se usa el rol IAM y estas quedan sin definir.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     depends_on:
       alert-db:
         condition: service_healthy

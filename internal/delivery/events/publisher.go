@@ -1,6 +1,7 @@
-// Package events implementa la publicación de eventos de dominio hacia
-// RabbitMQ. La topología (exchange, colas, retry, DLQ) la declara
-// vinculo-vial-core; este servicio únicamente publica.
+// Package events implementa la publicación y el consumo de eventos de
+// dominio sobre RabbitMQ. La topología (exchanges, colas, retry, DLQ) la
+// declara solo vinculo-vial-core; este servicio publica y consume sobre
+// topología existente.
 package events
 
 import (
@@ -16,53 +17,55 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-const (
-	routingKeyAlertCreated = "alert.created"
-	producerName           = "vinculo-vial-alert"
-)
+const producerName = "vinculo-vial-alert"
 
 // amqpChannel abstrae el subconjunto del canal AMQP utilizado, para permitir
-// mocks en tests sin depender de un broker real.
+// mocks en tests sin depender de un broker real. PublishAndConfirm publica y
+// espera el publisher confirm del broker antes de devolver.
 type amqpChannel interface {
-	PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
+	PublishAndConfirm(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (acked bool, err error)
 }
 
-// Publisher publica el evento alert.created en el exchange topic de la
-// plataforma, respetando el Event Envelope estándar.
+// Publisher publica eventos de outbox en el exchange topic de la plataforma,
+// respetando el Event Envelope estándar. La routing key es el eventType.
 type Publisher struct {
-	channel  amqpChannel
-	exchange string
+	channel        amqpChannel
+	exchange       string
+	publishTimeout time.Duration
 }
 
 var _ domain.EventPublisher = (*Publisher)(nil)
 
 // NewPublisher construye un Publisher sobre un canal AMQP ya abierto.
-func NewPublisher(channel amqpChannel, exchange string) *Publisher {
-	return &Publisher{channel: channel, exchange: exchange}
+// publishTimeout acota el propio basic.publish: el contexto del request no
+// trae un deadline propio para esta llamada, así que sin este timeout un
+// broker en flow control bloquearía el request indefinidamente.
+func NewPublisher(channel amqpChannel, exchange string, publishTimeout time.Duration) *Publisher {
+	return &Publisher{channel: channel, exchange: exchange, publishTimeout: publishTimeout}
 }
 
-// PublishAlertCreated implementa domain.EventPublisher.
-func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertCreatedEvent) error {
-	ownerIDs := make([]string, 0, len(event.OwnerIDs))
-	for _, id := range event.OwnerIDs {
-		ownerIDs = append(ownerIDs, id.String())
+// Publish implementa domain.EventPublisher.
+func (p *Publisher) Publish(ctx context.Context, event domain.OutboxEvent) error {
+	eventID := event.ID
+	if eventID == uuid.Nil {
+		// Defensa para llamadores que no vengan del outbox (ej. tests
+		// directos de Publisher): nunca publicar con un event_id vacío.
+		eventID = uuid.New()
 	}
 
-	payload, err := json.Marshal(alertCreatedPayload{
-		OwnerIDs:  ownerIDs,
-		AlertType: string(event.AlertType),
-	})
-	if err != nil {
-		return fmt.Errorf("rabbitmq publisher: error al serializar el payload: %w", err)
+	var actor *string
+	if event.Actor != nil {
+		value := event.Actor.String()
+		actor = &value
 	}
 
 	envelope := EventEnvelope{
-		EventID:   uuid.NewString(),
-		EventType: routingKeyAlertCreated,
+		EventID:   eventID.String(),
+		EventType: event.EventType,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Producer:  producerName,
-		Actor:     event.IssuerID.String(),
-		Payload:   payload,
+		Actor:     actor,
+		Payload:   event.Payload,
 	}
 
 	body, err := json.Marshal(envelope)
@@ -70,15 +73,26 @@ func (p *Publisher) PublishAlertCreated(ctx context.Context, event domain.AlertC
 		return fmt.Errorf("rabbitmq publisher: error al serializar el envelope: %w", err)
 	}
 
-	slog.Info("rabbitmq publisher: publicando alert.created", "exchange", p.exchange, "routing_key", routingKeyAlertCreated)
+	slog.Info("rabbitmq publisher: publicando evento", "exchange", p.exchange, "routing_key", event.EventType)
 
-	err = p.channel.PublishWithContext(ctx, p.exchange, routingKeyAlertCreated, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        body,
+	ctx, cancel := context.WithTimeout(ctx, p.publishTimeout)
+	defer cancel()
+
+	// mandatory=true: si el broker no puede enrutar el mensaje a ninguna
+	// cola, lo devuelve en vez de descartarlo en silencio. Connection
+	// escucha ese retorno vía NotifyReturn y loguea un WARN.
+	acked, err := p.channel.PublishAndConfirm(ctx, p.exchange, event.EventType, true, false, amqp.Publishing{
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		Body:         body,
 	})
 	if err != nil {
-		slog.Error("falla al publicar en rabbitmq", "exchange", p.exchange, "routing_key", routingKeyAlertCreated, "error", err.Error())
+		slog.Error("falla al publicar en rabbitmq", "exchange", p.exchange, "routing_key", event.EventType, "error", err.Error())
 		return fmt.Errorf("rabbitmq publisher: error al publicar el evento en exchange=%s: %w", p.exchange, err)
+	}
+	if !acked {
+		slog.Error("rabbitmq: el broker rechazó (nack) el mensaje", "exchange", p.exchange, "routing_key", event.EventType)
+		return fmt.Errorf("rabbitmq publisher: el broker rechazó (nack) el mensaje en exchange=%s", p.exchange)
 	}
 
 	return nil

@@ -1,0 +1,79 @@
+package postgres
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"vinculo-vial-alert/internal/domain"
+)
+
+// RestrictionModel es la representación GORM de la tabla
+// issuer_restrictions: el último estado de cuenta informado por Identity para
+// cada usuario.
+type RestrictionModel struct {
+	UserID        uuid.UUID `gorm:"column:user_id;type:uuid;primaryKey"`
+	AccountStatus string    `gorm:"column:account_status;type:varchar(32);not null"`
+	ChangedAt     time.Time `gorm:"column:changed_at;type:timestamptz;not null"`
+}
+
+// TableName fija el nombre de tabla explícito.
+func (RestrictionModel) TableName() string {
+	return "issuer_restrictions"
+}
+
+// RestrictionRepository implementa domain.RestrictionRepository sobre
+// GORM/PostgreSQL.
+type RestrictionRepository struct {
+	db *gorm.DB
+}
+
+var _ domain.RestrictionRepository = (*RestrictionRepository)(nil)
+
+// NewRestrictionRepository construye un RestrictionRepository a partir de una
+// conexión GORM ya establecida.
+func NewRestrictionRepository(db *gorm.DB) *RestrictionRepository {
+	return &RestrictionRepository{db: db}
+}
+
+// IsUnderReview indica si el usuario tiene registrado el estado UNDER_REVIEW.
+// Un usuario sin fila no está en revisión.
+func (r *RestrictionRepository) IsUnderReview(ctx context.Context, userID uuid.UUID) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	var total int64
+	err := r.db.WithContext(ctx).
+		Model(&RestrictionModel{}).
+		Where("user_id = ? AND account_status = ?", userID, string(domain.AccountStatusUnderReview)).
+		Count(&total).Error
+	if err != nil {
+		return false, classifyDBError(err)
+	}
+	return total > 0, nil
+}
+
+// Upsert implementa domain.RestrictionRepository con last-write-wins:
+// INSERT ... ON CONFLICT (user_id) DO UPDATE ... WHERE
+// issuer_restrictions.changed_at < EXCLUDED.changed_at. La condición hace de
+// barrera de idempotencia y de orden: un evento repetido o más viejo que el
+// guardado no modifica la fila.
+func (r *RestrictionRepository) Upsert(ctx context.Context, restriction domain.Restriction) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	model := RestrictionModel{
+		UserID:        restriction.UserID,
+		AccountStatus: string(restriction.AccountStatus),
+		ChangedAt:     restriction.ChangedAt.UTC(),
+	}
+	err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"account_status", "changed_at"}),
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "issuer_restrictions.changed_at < EXCLUDED.changed_at"}}},
+	}).Create(&model).Error
+	return classifyDBError(err)
+}
