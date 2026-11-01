@@ -24,7 +24,14 @@ func insertarRestriccion(t *testing.T, repo *RestrictionRepository, userID uuid.
 	}
 }
 
-func TestRestrictionRepository_IsUnderReview(t *testing.T) {
+// estaEnRevision adapta StatusOf a la pregunta que hacen varias pruebas del
+// repositorio: si el usuario está bloqueado por estar UNDER_REVIEW ahora.
+func estaEnRevision(ctx context.Context, repo *RestrictionRepository, userID uuid.UUID) (bool, error) {
+	status, err := repo.StatusOf(ctx, userID, time.Now().UTC())
+	return status == domain.AccountStatusUnderReview, err
+}
+
+func TestRestrictionRepository_StatusOf(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewRestrictionRepository(db)
 	enRevision, activo := uuid.New(), uuid.New()
@@ -33,20 +40,20 @@ func TestRestrictionRepository_IsUnderReview(t *testing.T) {
 
 	casos := map[string]struct {
 		userID uuid.UUID
-		want   bool
+		want   domain.AccountStatus
 	}{
-		"en revisión":            {enRevision, true},
-		"cuenta activa":          {activo, false},
-		"sin restricción alguna": {uuid.New(), false},
+		"en revisión":            {enRevision, domain.AccountStatusUnderReview},
+		"cuenta activa":          {activo, domain.AccountStatusActive},
+		"sin restricción alguna": {uuid.New(), domain.AccountStatusActive},
 	}
 	for nombre, caso := range casos {
 		t.Run(nombre, func(t *testing.T) {
-			got, err := repo.IsUnderReview(context.Background(), caso.userID)
+			got, err := repo.StatusOf(context.Background(), caso.userID, time.Now().UTC())
 			if err != nil {
 				t.Fatalf("error inesperado: %v", err)
 			}
 			if got != caso.want {
-				t.Errorf("IsUnderReview = %v, se esperaba %v", got, caso.want)
+				t.Errorf("StatusOf = %q, se esperaba %q", got, caso.want)
 			}
 		})
 	}
@@ -57,7 +64,7 @@ func TestRestrictionRepository_ContextoVencido_ClasificaComoBaseNoDisponible(t *
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	_, err := repo.IsUnderReview(ctx, uuid.New())
+	_, err := repo.StatusOf(ctx, uuid.New(), time.Now().UTC())
 
 	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba ErrDatabaseUnavailable", err)
@@ -68,7 +75,7 @@ func TestRestrictionModel_ColumnasExactas(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 
 	columnas := columnasDe(t, db, "issuer_restrictions")
-	esperadas := []string{"user_id", "account_status", "changed_at"}
+	esperadas := []string{"user_id", "account_status", "changed_at", "expires_at"}
 	if !reflect.DeepEqual(columnas, esperadas) {
 		t.Errorf("columnas = %v, se esperaban %v", columnas, esperadas)
 	}

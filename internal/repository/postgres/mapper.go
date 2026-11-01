@@ -4,9 +4,10 @@ import "vinculo-vial-alert/internal/domain"
 
 // toModel convierte la entidad de dominio a su representación persistente.
 func toModel(alert *domain.AlertHistory) AlertModel {
+	issuerID := alert.IssuerID
 	return AlertModel{
 		ID:        alert.ID,
-		IssuerID:  alert.IssuerID,
+		IssuerID:  &issuerID,
 		AlertType: string(alert.AlertType),
 		Status:    string(alert.Status),
 		CreatedAt: alert.CreatedAt,

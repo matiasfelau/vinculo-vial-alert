@@ -120,12 +120,13 @@ type Resolution struct {
 type VerdictRepository interface {
 	// Activate pasa la alerta a ACTIVE con el veredicto, registra las
 	// imágenes redactadas, descarta las filas de los originales y encola
-	// alert.created (actor = emisor, owner_ids de sus destinatarios, que
-	// pueden ser ninguno: entonces owner_ids es []).
+	// alert.created (actor = emisor, ausente si la alerta ya no tiene emisor;
+	// owner_ids de sus destinatarios, que pueden ser ninguno: entonces owner_ids
+	// es []).
 	Activate(ctx context.Context, result ValidationResult, now time.Time) (Resolution, error)
 	// Reject pasa la alerta a REJECTED, borra sus destinatarios y su evidencia,
 	// anula el resultado de la validación y encola alert.rejected (actor =
-	// emisor).
+	// emisor, ausente si la alerta ya no tiene emisor).
 	Reject(ctx context.Context, result ValidationResult, now time.Time) (Resolution, error)
 	// OwnedRedactedKeys devuelve las claves REDACTED que alguna alerta ya
 	// registró para alertID. Permite distinguir los redactados huérfanos de
@@ -145,8 +146,9 @@ type AlertRejectedPayload struct {
 }
 
 // NewAlertRejectedEvent construye el evento de outbox alert.rejected. El
-// emisor va en Actor, nunca en el payload.
-func NewAlertRejectedEvent(id, issuerID, alertID uuid.UUID, reasonCodes []ReasonCode, createdAt time.Time) (OutboxEvent, error) {
+// emisor va en Actor, nunca en el payload; sin emisor (issuerID nil) sale sin
+// actor: no hay a quién penalizar.
+func NewAlertRejectedEvent(id uuid.UUID, issuerID *uuid.UUID, alertID uuid.UUID, reasonCodes []ReasonCode, createdAt time.Time) (OutboxEvent, error) {
 	if reasonCodes == nil {
 		reasonCodes = []ReasonCode{}
 	}
@@ -157,7 +159,7 @@ func NewAlertRejectedEvent(id, issuerID, alertID uuid.UUID, reasonCodes []Reason
 	return OutboxEvent{
 		ID:        id,
 		EventType: EventTypeAlertRejected,
-		Actor:     &issuerID,
+		Actor:     issuerID,
 		Payload:   payload,
 		CreatedAt: createdAt,
 	}, nil

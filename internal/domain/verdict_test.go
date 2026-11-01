@@ -52,7 +52,7 @@ func TestReasonCode_IsKnown(t *testing.T) {
 func TestNewAlertRejectedEvent_ElEmisorVaEnActorNoEnElPayload(t *testing.T) {
 	issuerID, alertID := uuid.New(), uuid.New()
 
-	event, err := NewAlertRejectedEvent(uuid.New(), issuerID, alertID, []ReasonCode{ReasonPlateMismatch}, time.Now().UTC())
+	event, err := NewAlertRejectedEvent(uuid.New(), &issuerID, alertID, []ReasonCode{ReasonPlateMismatch}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestNewAlertRejectedEvent_ElEmisorVaEnActorNoEnElPayload(t *testing.T) {
 }
 
 func TestNewAlertRejectedEvent_ReasonCodesNuncaEsNull(t *testing.T) {
-	event, err := NewAlertRejectedEvent(uuid.New(), uuid.New(), uuid.New(), nil, time.Now().UTC())
+	event, err := NewAlertRejectedEvent(uuid.New(), nil, uuid.New(), nil, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRedactedEvidenceKey(t *testing.T) {
 func TestNewAlertExpiredEvent_ElEmisorVaEnActorNoEnElPayload(t *testing.T) {
 	issuerID, alertID := uuid.New(), uuid.New()
 
-	event, err := NewAlertExpiredEvent(uuid.New(), issuerID, alertID, AlertTypeCrashed, time.Now().UTC())
+	event, err := NewAlertExpiredEvent(uuid.New(), &issuerID, alertID, AlertTypeCrashed, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestNewAlertExpiredEvent_ElEmisorVaEnActorNoEnElPayload(t *testing.T) {
 func TestNewAlertSeenEvent_ElEmisorVaEnActorYElPayloadNoRevelaAQuienLeyo(t *testing.T) {
 	issuerID, alertID := uuid.New(), uuid.New()
 
-	event, err := NewAlertSeenEvent(uuid.New(), issuerID, alertID, AlertTypeParkedOnGarage, time.Now().UTC())
+	event, err := NewAlertSeenEvent(uuid.New(), &issuerID, alertID, AlertTypeParkedOnGarage, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestNewAlertSeenEvent_ElEmisorVaEnActorYElPayloadNoRevelaAQuienLeyo(t *test
 func TestNewAlertCreatedEvent_LlevaAlertIdYElEmisorSoloEnActor(t *testing.T) {
 	issuerID, alertID, ownerID := uuid.New(), uuid.New(), uuid.New()
 
-	event, err := NewAlertCreatedEvent(uuid.New(), issuerID, alertID, AlertTypeCrashed, []uuid.UUID{ownerID}, time.Now().UTC())
+	event, err := NewAlertCreatedEvent(uuid.New(), &issuerID, alertID, AlertTypeCrashed, []uuid.UUID{ownerID}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}

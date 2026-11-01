@@ -88,6 +88,9 @@ func (h *AlertHandler) respondFailure(c *gin.Context, issuerID uuid.UUID, err er
 	case errors.Is(err, domain.ErrIssuerUnderReview):
 		slog.Warn("alerts handler: emisor en revisión", "issuer_id", issuerID)
 		respondError(c, http.StatusForbidden, codeIssuerUnderReview, "el emisor está en revisión")
+	case errors.Is(err, domain.ErrAccountDeleted):
+		slog.Warn("alerts handler: cuenta dada de baja", "issuer_id", issuerID)
+		respondError(c, http.StatusForbidden, codeAccountDeleted, "la cuenta fue dada de baja")
 	case errors.Is(err, errAlertTypeOff):
 		respondError(c, http.StatusBadRequest, codeAlertTypeDisabled, "el tipo de alerta está deshabilitado")
 	case errors.Is(err, errInvalidAlertType):

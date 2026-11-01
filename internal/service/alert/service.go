@@ -81,17 +81,15 @@ func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts doma
 }
 
 // CheckIssuer verifica que el emisor pueda crear alertas. Se invoca antes de
-// leer el multipart. Devuelve domain.ErrIssuerUnderReview si está en revisión.
-// Si no se puede consultar la restricción, falla cerrado.
+// leer el multipart. Devuelve domain.ErrIssuerUnderReview si está en revisión y
+// domain.ErrAccountDeleted si dio de baja su cuenta y la restricción todavía no
+// venció. Si no se puede consultar la restricción, falla cerrado.
 func (s *CreateAlertService) CheckIssuer(ctx context.Context, issuerID uuid.UUID) error {
-	underReview, err := s.restrictions.IsUnderReview(ctx, issuerID)
+	status, err := s.restrictions.StatusOf(ctx, issuerID, s.now())
 	if err != nil {
 		return fmt.Errorf("create alert service: error al consultar la restricción del emisor: %w", err)
 	}
-	if underReview {
-		return domain.ErrIssuerUnderReview
-	}
-	return nil
+	return status.AlertCreationError()
 }
 
 // Execute crea la alerta con su evidencia. El orden es deliberado: primero se

@@ -41,9 +41,9 @@ const expireBatchSize = 500
 // pendingAlertRow es lo que hace falta de una alerta pendiente para expirarla y
 // armar su evento.
 type pendingAlertRow struct {
-	ID        uuid.UUID `gorm:"column:id"`
-	IssuerID  uuid.UUID `gorm:"column:issuer_id"`
-	AlertType string    `gorm:"column:alert_type"`
+	ID        uuid.UUID  `gorm:"column:id"`
+	IssuerID  *uuid.UUID `gorm:"column:issuer_id"`
+	AlertType string     `gorm:"column:alert_type"`
 }
 
 // ExpirePending implementa domain.SweeperRepository. Por lotes, cada uno en una
@@ -171,6 +171,29 @@ func (r *SweeperRepository) DeleteEvidenceRows(ctx context.Context, ids []uuid.U
 	defer cancel()
 
 	return classifyDBError(r.db.WithContext(ctx).Where("id IN ?", ids).Delete(&AlertEvidenceModel{}).Error)
+}
+
+// DeleteExpiredHolds implementa domain.SweeperRepository. Un único DELETE
+// condicional sobre el índice de destroy_at: repetirlo o correrlo desde varias
+// réplicas no tiene efectos.
+func (r *SweeperRepository) DeleteExpiredHolds(ctx context.Context, now time.Time) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	result := r.db.WithContext(ctx).Exec("DELETE FROM "+alertHoldsTable+" WHERE destroy_at <= ?", now.UTC())
+	return result.RowsAffected, classifyDBError(result.Error)
+}
+
+// DeleteExpiredDeletedRestrictions implementa domain.SweeperRepository. Solo
+// toca las restricciones DELETED vencidas: las de revisión no tienen vencimiento.
+func (r *SweeperRepository) DeleteExpiredDeletedRestrictions(ctx context.Context, now time.Time) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	result := r.db.WithContext(ctx).
+		Where("account_status = ? AND expires_at <= ?", string(domain.AccountStatusDeleted), now.UTC()).
+		Delete(&RestrictionModel{})
+	return result.RowsAffected, classifyDBError(result.Error)
 }
 
 // ClearExpiredPending implementa domain.SweeperRepository. Un único UPDATE

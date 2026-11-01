@@ -50,12 +50,12 @@ func visibleSummary(tx *gorm.DB, alertID, ownerID uuid.UUID) (alertSummary, erro
 	return rows[0], nil
 }
 
-// issuerOf devuelve el emisor de una alerta visible para ownerID, o
-// domain.ErrAlertNotFound.
-func issuerOf(tx *gorm.DB, alertID, ownerID uuid.UUID) (uuid.UUID, error) {
+// issuerOf devuelve el emisor de una alerta visible para ownerID (nil si dio de
+// baja su cuenta), o domain.ErrAlertNotFound.
+func issuerOf(tx *gorm.DB, alertID, ownerID uuid.UUID) (*uuid.UUID, error) {
 	summary, err := visibleSummary(tx, alertID, ownerID)
 	if err != nil {
-		return uuid.Nil, err
+		return nil, err
 	}
 	return summary.IssuerID, nil
 }
