@@ -16,6 +16,18 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
+// adjuntarLegalHold adjunta una base en memoria con el nombre del esquema
+// legal_hold: SQLite no tiene esquemas, y las tablas calificadas
+// (legal_hold.alert_holds) viven en una base adjunta. Hay que llamarla antes de
+// AutoMigrate, con la conexión única del test.
+func adjuntarLegalHold(t *testing.T, db *gorm.DB) {
+	t.Helper()
+
+	if err := db.Exec("ATTACH DATABASE ':memory:' AS " + legalHoldSchema).Error; err != nil {
+		t.Fatalf("no se pudo adjuntar la base %s: %v", legalHoldSchema, err)
+	}
+}
+
 func nuevaDBDePrueba(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -35,6 +47,7 @@ func nuevaDBDePrueba(t *testing.T) *gorm.DB {
 	if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
 		t.Fatalf("no se pudo activar foreign_keys: %v", err)
 	}
+	adjuntarLegalHold(t, db)
 
 	if err := AutoMigrate(db); err != nil {
 		t.Fatalf("AutoMigrate falló: %v", err)
@@ -427,9 +440,10 @@ func TestAlertEvidenceModel_ColumnasExactasYSinBinarios(t *testing.T) {
 func insertarAlerta(t *testing.T, db *gorm.DB) AlertModel {
 	t.Helper()
 
+	issuerID := uuid.New()
 	alert := AlertModel{
 		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
+		IssuerID:  &issuerID,
 		AlertType: string(domain.AlertTypeCrashed),
 		Status:    string(domain.AlertStatusActive),
 		CreatedAt: time.Now().UTC(),

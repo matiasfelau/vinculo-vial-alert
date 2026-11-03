@@ -34,7 +34,9 @@ type claimedAlert struct {
 // claimPendingSQL toma, anulando su referencia, las alertas que corresponde
 // entregar al dueño nuevo: la referencia coincide, la entrega sigue vigente, la
 // alerta está esperando el veredicto o ya está activa y el emisor no es el
-// propio dueño. Una alerta REJECTED o EXPIRED nunca se toma.
+// propio dueño. Una alerta cuyo emisor dio de baja su cuenta (issuer_id nulo)
+// sigue siendo válida y se entrega: no hay emisor que pueda ser el dueño. Una
+// alerta REJECTED o EXPIRED nunca se toma.
 //
 // Es un único UPDATE ... RETURNING a propósito. Toma el lock de cada fila, así
 // que se serializa con el veredicto (Activate y Reject también actualizan la
@@ -44,7 +46,7 @@ type claimedAlert struct {
 // En ningún orden se pierde el aviso. Además, al anular pending_ref, un
 // reintento del mismo evento ya no encuentra nada que entregar.
 const claimPendingSQL = `UPDATE alerts SET pending_ref = NULL, pending_until = NULL
-WHERE pending_ref = ? AND pending_until > ? AND issuer_id <> ? AND status IN (?, ?)
+WHERE pending_ref = ? AND pending_until > ? AND (issuer_id IS NULL OR issuer_id <> ?) AND status IN (?, ?)
 RETURNING id, status`
 
 // Deliver implementa domain.PendingRepository.

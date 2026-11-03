@@ -29,13 +29,22 @@ const (
 
 var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
+// mockRestrictions devuelve el estado configurado: underReview es un atajo para
+// UNDER_REVIEW y status cubre el resto (por ejemplo DELETED).
 type mockRestrictions struct {
 	underReview bool
+	status      domain.AccountStatus
 	err         error
 }
 
-func (m *mockRestrictions) IsUnderReview(context.Context, uuid.UUID) (bool, error) {
-	return m.underReview, m.err
+func (m *mockRestrictions) StatusOf(context.Context, uuid.UUID, time.Time) (domain.AccountStatus, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	if m.underReview {
+		return domain.AccountStatusUnderReview, nil
+	}
+	return m.status, nil
 }
 
 type mockAttempts struct {
@@ -223,6 +232,7 @@ func TestCheckIssuer(t *testing.T) {
 	}{
 		"emisor activo":                        {&mockRestrictions{}, nil},
 		"emisor en revisión":                   {&mockRestrictions{underReview: true}, domain.ErrIssuerUnderReview},
+		"cuenta dada de baja":                  {&mockRestrictions{status: domain.AccountStatusDeleted}, domain.ErrAccountDeleted},
 		"no se puede consultar: falla cerrado": {&mockRestrictions{err: domain.ErrDatabaseUnavailable}, domain.ErrDatabaseUnavailable},
 	}
 	for nombre, caso := range casos {

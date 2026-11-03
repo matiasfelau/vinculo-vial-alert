@@ -35,7 +35,7 @@ func (m *mockChannel) PublishAndConfirm(ctx context.Context, exchange, key strin
 
 func nuevoEventoAlertCreated(t *testing.T, issuerID uuid.UUID, owners ...uuid.UUID) domain.OutboxEvent {
 	t.Helper()
-	event, err := domain.NewAlertCreatedEvent(uuid.New(), issuerID, uuid.New(), domain.AlertTypeCrashed, owners, time.Now().UTC())
+	event, err := domain.NewAlertCreatedEvent(uuid.New(), &issuerID, uuid.New(), domain.AlertTypeCrashed, owners, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("no se pudo construir el evento: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 const (
 	codeInvalidPlateCryptogram = "INVALID_PLATE_CRYPTOGRAM"
 	codeIssuerUnderReview      = "ISSUER_UNDER_REVIEW"
+	codeAccountDeleted         = "ACCOUNT_DELETED"
 	codeUpstreamBadGateway     = "UPSTREAM_BAD_GATEWAY"
 	codeDependencyUnavailable  = "DEPENDENCY_UNAVAILABLE"
 	codeInvalidEvidence        = "INVALID_EVIDENCE"

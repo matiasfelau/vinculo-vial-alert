@@ -20,6 +20,7 @@ import (
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
 	attemptsvc "vinculo-vial-alert/internal/service/attempt"
+	deletionsvc "vinculo-vial-alert/internal/service/deletion"
 	inboxsvc "vinculo-vial-alert/internal/service/inbox"
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
 	ownersvc "vinculo-vial-alert/internal/service/owner"
@@ -154,6 +155,19 @@ func main() {
 			})
 	}()
 
+	deletionService := deletionsvc.NewApplyDeletionService(repopostgres.NewUserDeletionRepository(db), cfg.LegalHoldRetention, cfg.AccessTokenTTL)
+	userDeletedStatus := &deliveryevents.ConnectionStatus{}
+	userDeletedDone := make(chan struct{})
+	go func() {
+		defer close(userDeletedDone)
+		deliveryevents.RunWithReconnect(consumersCtx, cfg.RabbitMQURL, cfg.UserDeletedQueue, cfg.RabbitMQPrefetch, userDeletedStatus,
+			func(channel deliveryevents.ConsumerChannel) *deliveryevents.Consumer {
+				deadLetters := deliveryevents.NewAMQPDeadLetterPublisher(channel, cfg.RabbitMQPublishTimeout)
+				handler := deliveryevents.NewMessageHandler(deliveryevents.NewUserDeletedProcessor(deletionService), deadLetters, cfg.UserDeletedQueue, cfg.MaxRetries)
+				return deliveryevents.NewConsumer(channel, cfg.UserDeletedQueue, handler)
+			})
+	}()
+
 	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention, cfg.SentRetention)
 	sweeperDone := make(chan struct{})
 	go func() {
@@ -177,6 +191,7 @@ func main() {
 		deliveryhttp.DependencyCheck{Name: "verdict_consumer", Healthy: verdictStatus.Connected},
 		deliveryhttp.DependencyCheck{Name: "user_status_consumer", Healthy: userStatusStatus.Connected},
 		deliveryhttp.DependencyCheck{Name: "pending_claimed_consumer", Healthy: pendingClaimedStatus.Connected},
+		deliveryhttp.DependencyCheck{Name: "user_deleted_consumer", Healthy: userDeletedStatus.Connected},
 	)
 	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
 	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, ownerHandler, inboxHandler, sentHandler, healthHandler, readyHandler, depsHandler)
@@ -228,6 +243,12 @@ func main() {
 	case <-pendingClaimedDone:
 	case <-ctx.Done():
 		log.Println("el consumidor de vinculaciones pendientes no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
+	}
+
+	select {
+	case <-userDeletedDone:
+	case <-ctx.Done():
+		log.Println("el consumidor de bajas de usuario no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
 	}
 
 	select {

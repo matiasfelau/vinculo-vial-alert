@@ -15,6 +15,14 @@ const (
 	attemptsTable       = "alert_attempts"
 	outboxTable         = "outbox_events"
 	outboxBackfillBatch = 500
+
+	// legalHoldSchema es el esquema aislado de los registros de retención de las
+	// bajas de cuenta. Ningún endpoint lo lee: solo lo tocan la baja y el
+	// sweeper.
+	legalHoldSchema = "legal_hold"
+	alertHoldsTable = legalHoldSchema + ".alert_holds"
+
+	postgresDialect = "postgres"
 )
 
 // newOutboxColumns son las columnas del outbox genérico, agregadas nullable
@@ -32,9 +40,12 @@ var legacyOutboxColumns = []string{"issuer_id", "alert_type", "owner_ids"}
 
 // AutoMigrate crea o actualiza el esquema de las tablas alerts,
 // alert_destinations, alert_evidence, outbox_events, alert_attempts,
-// issuer_restrictions, alert_feedback y alert_reports. Antes de eso convierte el outbox del
+// issuer_restrictions, alert_feedback y alert_reports, y el de
+// legal_hold.alert_holds. Antes de eso convierte el outbox del
 // esquema viejo al genérico (ver migrateLegacyOutbox). AlertModel se migra
-// primero: AlertDestinationModel depende de su FK.
+// primero: AlertDestinationModel depende de su FK. Que alerts.issuer_id acepte
+// nulos lo resuelve el propio AutoMigrate: relaja un NOT NULL existente y nunca
+// endurece una columna.
 func AutoMigrate(db *gorm.DB) error {
 	if err := migrateLegacyOutbox(db); err != nil {
 		return fmt.Errorf("migración del outbox genérico: %w", err)
@@ -45,7 +56,54 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := migrateAttemptsWithoutResolution(db); err != nil {
 		return fmt.Errorf("migración del intento sin resolución: %w", err)
 	}
-	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &AlertEvidenceModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{}, &AlertFeedbackModel{}, &AlertReportModel{})
+	if err := db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &AlertEvidenceModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{}, &AlertFeedbackModel{}, &AlertReportModel{}); err != nil {
+		return err
+	}
+	if err := migrateLegalHold(db); err != nil {
+		return fmt.Errorf("migración del esquema legal_hold: %w", err)
+	}
+	return nil
+}
+
+// migrateLegalHold crea el esquema legal_hold y alert_holds con sus índices
+// (issuer_id y destroy_at). Es idempotente. La tabla no se declara como modelo
+// de GORM: su nombre está calificado por el esquema y las pruebas corren sobre
+// SQLite, que no tiene esquemas (ahí legal_hold es una base adjunta), así que el
+// DDL va a mano. El único SQL que difiere entre motores es el del índice:
+// PostgreSQL califica la tabla y SQLite el índice.
+func migrateLegalHold(db *gorm.DB) error {
+	postgres := db.Dialector.Name() == postgresDialect
+
+	var statements []string
+	if postgres {
+		statements = append(statements, "CREATE SCHEMA IF NOT EXISTS "+legalHoldSchema)
+	}
+	statements = append(statements,
+		"CREATE TABLE IF NOT EXISTS "+alertHoldsTable+" ("+
+			"alert_id uuid PRIMARY KEY, "+
+			"issuer_id uuid NOT NULL, "+
+			"alert_type varchar(64) NOT NULL, "+
+			"created_at timestamptz NOT NULL, "+
+			"destroy_at timestamptz NOT NULL)",
+		createHoldIndexSQL(postgres, "idx_alert_holds_issuer_id", "issuer_id"),
+		createHoldIndexSQL(postgres, "idx_alert_holds_destroy_at", "destroy_at"),
+	)
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, statement := range statements {
+			if err := tx.Exec(statement).Error; err != nil {
+				return fmt.Errorf("%s: %w", statement, err)
+			}
+		}
+		return nil
+	})
+}
+
+func createHoldIndexSQL(postgres bool, name, column string) string {
+	if postgres {
+		return "CREATE INDEX IF NOT EXISTS " + name + " ON " + alertHoldsTable + " (" + column + ")"
+	}
+	return "CREATE INDEX IF NOT EXISTS " + legalHoldSchema + "." + name + " ON alert_holds (" + column + ")"
 }
 
 // legacyAttemptColumns son las columnas del intento con resolución de dueños

@@ -49,7 +49,7 @@ func TestRestrictionRepository_Upsert_InsertaUnUsuarioNuevo(t *testing.T) {
 	if !existe || status != "UNDER_REVIEW" || !changedAt.Equal(base) {
 		t.Errorf("guardado = %q en %v (existe=%v), se esperaba UNDER_REVIEW en %v", status, changedAt, existe, base)
 	}
-	if bloqueado, err := repo.IsUnderReview(context.Background(), userID); err != nil || !bloqueado {
+	if bloqueado, err := estaEnRevision(context.Background(), repo, userID); err != nil || !bloqueado {
 		t.Errorf("IsUnderReview = %v, %v; el emisor debía quedar bloqueado", bloqueado, err)
 	}
 }
@@ -70,7 +70,7 @@ func TestRestrictionRepository_Upsert_UnEventoMasRecienteReemplazaAlGuardado(t *
 	if status != "ACTIVE" || !changedAt.Equal(base.Add(time.Minute)) {
 		t.Errorf("guardado = %q en %v, se esperaba ACTIVE en %v", status, changedAt, base.Add(time.Minute))
 	}
-	if bloqueado, _ := repo.IsUnderReview(ctx, userID); bloqueado {
+	if bloqueado, _ := estaEnRevision(ctx, repo, userID); bloqueado {
 		t.Error("al volver a ACTIVE el emisor deja de estar bloqueado")
 	}
 }
@@ -94,7 +94,7 @@ func TestRestrictionRepository_Upsert_UnEventoMasViejoLlegaTardeYNoPisaAlMasNuev
 	if status != "UNDER_REVIEW" || !changedAt.Equal(base.Add(time.Minute)) {
 		t.Errorf("guardado = %q en %v; el evento viejo no debía pisar al más reciente", status, changedAt)
 	}
-	if bloqueado, _ := repo.IsUnderReview(ctx, userID); !bloqueado {
+	if bloqueado, _ := estaEnRevision(ctx, repo, userID); !bloqueado {
 		t.Error("el emisor debía seguir bloqueado")
 	}
 }
@@ -149,10 +149,10 @@ func TestRestrictionRepository_Upsert_LosUsuariosSonIndependientes(t *testing.T)
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	if bloqueado, _ := repo.IsUnderReview(ctx, enRevision); !bloqueado {
+	if bloqueado, _ := estaEnRevision(ctx, repo, enRevision); !bloqueado {
 		t.Error("el usuario en revisión debía seguir bloqueado")
 	}
-	if bloqueado, _ := repo.IsUnderReview(ctx, activo); bloqueado {
+	if bloqueado, _ := estaEnRevision(ctx, repo, activo); bloqueado {
 		t.Error("el usuario activo no debe estar bloqueado")
 	}
 }

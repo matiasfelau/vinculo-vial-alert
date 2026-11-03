@@ -72,8 +72,9 @@ type AlertReportedPayload struct {
 
 // NewAlertReportedEvent construye el evento de outbox alert.reported. El
 // emisor reportado va en Actor, nunca en el payload; el dueño que reporta no
-// figura en ningún lado.
-func NewAlertReportedEvent(id, issuerID, alertID uuid.UUID, reason ReportReason, createdAt time.Time) (OutboxEvent, error) {
+// figura en ningún lado. Sin emisor (issuerID nil) sale sin actor: no hay a
+// quién poner en revisión.
+func NewAlertReportedEvent(id uuid.UUID, issuerID *uuid.UUID, alertID uuid.UUID, reason ReportReason, createdAt time.Time) (OutboxEvent, error) {
 	payload, err := json.Marshal(AlertReportedPayload{AlertID: alertID, Reason: reason})
 	if err != nil {
 		return OutboxEvent{}, err
@@ -81,7 +82,7 @@ func NewAlertReportedEvent(id, issuerID, alertID uuid.UUID, reason ReportReason,
 	return OutboxEvent{
 		ID:        id,
 		EventType: EventTypeAlertReported,
-		Actor:     &issuerID,
+		Actor:     issuerID,
 		Payload:   payload,
 		CreatedAt: createdAt,
 	}, nil
@@ -100,8 +101,8 @@ type AlertSeenPayload struct {
 }
 
 // NewAlertSeenEvent construye el evento de outbox alert.seen. El emisor va en
-// Actor, nunca en el payload.
-func NewAlertSeenEvent(id, issuerID, alertID uuid.UUID, alertType AlertType, createdAt time.Time) (OutboxEvent, error) {
+// Actor, nunca en el payload; sin emisor (issuerID nil) sale sin actor.
+func NewAlertSeenEvent(id uuid.UUID, issuerID *uuid.UUID, alertID uuid.UUID, alertType AlertType, createdAt time.Time) (OutboxEvent, error) {
 	payload, err := json.Marshal(AlertSeenPayload{AlertID: alertID, AlertType: alertType})
 	if err != nil {
 		return OutboxEvent{}, err
@@ -109,7 +110,7 @@ func NewAlertSeenEvent(id, issuerID, alertID uuid.UUID, alertType AlertType, cre
 	return OutboxEvent{
 		ID:        id,
 		EventType: EventTypeAlertSeen,
-		Actor:     &issuerID,
+		Actor:     issuerID,
 		Payload:   payload,
 		CreatedAt: createdAt,
 	}, nil

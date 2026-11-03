@@ -1,7 +1,8 @@
 // Package sweeper ejecuta las limpiezas periódicas del servicio: intentos
 // vencidos, alertas que nunca recibieron veredicto, referencias de patentes
 // pendientes cuya entrega venció, alertas rechazadas o vencidas fuera de la
-// ventana de Enviados y evidencia redactada cuya retención venció.
+// ventana de Enviados, registros de retención de bajas de cuenta y
+// restricciones DELETED vencidos, y evidencia redactada cuya retención venció.
 package sweeper
 
 import (
@@ -87,6 +88,25 @@ func (s *Sweeper) RunOnce(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("sweeper: error al borrar las alertas rechazadas o vencidas fuera de la ventana de Enviados: %w", err))
 	} else if sent > 0 {
 		slog.Info("sweeper: alertas rechazadas o vencidas fuera de la ventana de Enviados borradas", "cantidad", sent)
+	}
+
+	// Los registros de retención de las bajas de cuenta se destruyen al vencer
+	// su destroy_at (art. 4 inc. 7 de la Ley 25.326). Se loguea solo la cantidad:
+	// los registros identifican al emisor dado de baja.
+	holds, err := s.repo.DeleteExpiredHolds(ctx, now)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("sweeper: error al destruir los registros de retención vencidos: %w", err))
+	} else if holds > 0 {
+		slog.Info("sweeper: registros de retención vencidos destruidos", "cantidad", holds)
+	}
+
+	// Pasado el plazo del access token, la restricción DELETED ya no protege a
+	// nadie: el usuario no existe y no hay token válido.
+	restrictions, err := s.repo.DeleteExpiredDeletedRestrictions(ctx, now)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("sweeper: error al borrar las restricciones de bajas vencidas: %w", err))
+	} else if restrictions > 0 {
+		slog.Info("sweeper: restricciones de bajas de cuenta vencidas borradas", "cantidad", restrictions)
 	}
 
 	if err := s.sweepRedacted(ctx, now.Add(-s.retention)); err != nil {

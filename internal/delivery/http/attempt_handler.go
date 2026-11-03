@@ -60,6 +60,9 @@ func (h *AttemptHandler) respondFailure(c *gin.Context, issuerID uuid.UUID, err 
 	case errors.Is(err, domain.ErrIssuerUnderReview):
 		slog.Warn("attempts handler: emisor en revisión", "issuer_id", issuerID)
 		respondError(c, http.StatusForbidden, codeIssuerUnderReview, "el emisor está en revisión")
+	case errors.Is(err, domain.ErrAccountDeleted):
+		slog.Warn("attempts handler: cuenta dada de baja", "issuer_id", issuerID)
+		respondError(c, http.StatusForbidden, codeAccountDeleted, "la cuenta fue dada de baja")
 	case errors.Is(err, domain.ErrDatabaseUnavailable):
 		slog.Error("attempts handler: dependencia no disponible", "issuer_id", issuerID, "error", err.Error())
 		c.Header(headerRetryAfter, retryAfterSeconds(h.retryAfter))

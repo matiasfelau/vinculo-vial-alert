@@ -79,6 +79,7 @@ El servicio sigue Clean Architecture:
 /internal/service/attempt  caso de uso del intento de alerta
 /internal/service/alert    caso de uso de creación de alertas con evidencia
 /internal/service/inbox    caso de uso de lectura del buzón de alertas
+/internal/service/deletion caso de uso de la baja de cuenta (user.deleted)
 /internal/service/outbox   worker de publicación en background (transactional outbox)
 /internal/circuitbreaker   circuit breaker genérico para llamadas salientes
 /internal/repository       persistencia (GORM/PostgreSQL)
@@ -190,6 +191,95 @@ destinatarios: la alerta sigue existiendo para el emisor en Enviados.
 Los logs de este flujo llevan solo cantidades: nunca la referencia pendiente ni
 los emisores.
 
+Una alerta cuyo emisor dio de baja su cuenta (`issuer_id` nulo, ver "Baja de
+cuenta") sigue siendo una alerta válida y también se entrega: no hay emisor que
+pueda ser el propio dueño.
+
+## Baja de cuenta (US-11)
+
+Identity da de baja la cuenta y publica `user.deleted` (`{ deleted_at }` en el
+payload, `actor` = el usuario dado de baja). Alert consume esa cola
+(`USER_DELETED_QUEUE`, por defecto `alert.user-deleted.q`) con ack manual,
+`prefetch`, reintentos por `x-death` hasta `MAX_RETRIES` y DLQ con confirm. Un
+mensaje sin `actor` UUID o sin `deleted_at` RFC 3339 es inválido y va directo a
+la DLQ; cualquier otro fallo es transitorio y se reintenta.
+
+En **una transacción idempotente** (`UserDeletionRepository.Apply`):
+
+1. borra los intentos del usuario (`alert_attempts`);
+2. reemplaza su fila de `issuer_restrictions` por `DELETED` con `expires_at =
+   deleted_at + ACCESS_TOKEN_TTL_MINUTES`;
+3. copia cada alerta que emitió, sea cual sea su estado, a
+   `legal_hold.alert_holds` (`destroy_at = deleted_at + LEGAL_HOLD_DAYS`) y anula
+   su `issuer_id`;
+4. anula el `actor` de los eventos del outbox todavía sin publicar de esas alertas;
+5. como dueño, borra sus filas de `alert_destinations`, `alert_feedback` y
+   `alert_reports`.
+
+Los intentos se borran **primero** a propósito: `POST /alerts` consume su intento
+con un `DELETE` condicional dentro de la transacción que inserta la alerta, y ese
+`DELETE` y el de la baja se serializan sobre la misma fila. Si la creación en
+vuelo gana, la baja espera su commit y los pasos siguientes ya ven la alerta
+nueva, así que la copian y la desvinculan; si gana la baja, la creación no
+encuentra el intento y responde `410`. En ningún orden queda una alerta con el
+emisor dado de baja.
+
+Las alertas emitidas **siguen existiendo para sus dueños**, con `issuer_id` nulo:
+el buzón, la evidencia, la valoración y el reporte funcionan igual, y `GET
+/alerts/sent` y el resto de los endpoints no cambian. Todo evento cuyo `actor`
+era el emisor sale **sin `actor`**: `alert.created`, `alert.seen`,
+`alert.expired`, `alert.rejected` y `alert.reported`. Reportar una alerta sin
+emisor responde `202` igual y publica `alert.reported` sin actor, que Identity
+confirma sin efecto (no hay a quién poner en revisión). La falta de `actor`
+nunca manda un mensaje a la DLQ.
+
+**Idempotencia.** Un reintento o un duplicado no encuentra alertas con ese
+`issuer_id` (ya quedaron en nulo), no encuentra filas del dueño que borrar y no
+duplica holds: el `INSERT` de `alert_holds` es `ON CONFLICT (alert_id) DO NOTHING`,
+así que además conserva el `destroy_at` original.
+
+### Registro de retención (`legal_hold.alert_holds`)
+
+Registro mínimo, por 3 años (art. 16 inc. 5 de la Ley 25.326), aislado de las
+tablas operativas en el esquema `legal_hold` y destruido al vencer (art. 4 inc. 7):
+
+| Columna | Tipo | Nota |
+|---|---|---|
+| `alert_id` | `uuid` PK | |
+| `issuer_id` | `uuid` not null, indexada | el emisor dado de baja |
+| `alert_type` | `varchar(64)` | |
+| `created_at` | `timestamptz` | de la alerta |
+| `destroy_at` | `timestamptz` not null, indexada | `deleted_at + LEGAL_HOLD_DAYS` |
+
+Ningún endpoint lee los holds (un test lo verifica sobre el código): solo los
+escribe la baja y los destruye el sweeper. Nunca se loguean sus datos; el log de
+la baja lleva solo cantidades. Es una copia de la alerta, no la alerta: destruirla
+no toca la alerta que siguen viendo sus dueños. El esquema lo crea la migración
+(`CREATE SCHEMA IF NOT EXISTS legal_hold`); en producción conviene que el acceso a
+ese esquema sea con un rol de base de datos propio, que se otorga por fuera de la
+aplicación.
+
+### Restricción `DELETED`
+
+El access token emitido antes de la baja sigue siendo válido
+`ACCESS_TOKEN_TTL_MINUTES`. Mientras la restricción `DELETED` no venza,
+`POST /api/v1/alerts/attempts` y `POST /api/v1/alerts` responden `403
+ACCOUNT_DELETED`; el buzón y las demás rutas no cambian, y no hay nada que
+mostrar: el usuario ya no tiene destinatarios ni alertas. Pasado `expires_at` el
+usuario no existe y no hay token válido, así que la consulta ya no la tiene en
+cuenta y el sweeper borra la fila.
+
+`DELETED` no pertenece al catálogo de `user.status.changed` (un evento que lo
+traiga es inválido). Un `user.status.changed` que llegue tarde nunca pisa una
+restricción `DELETED`.
+
+### Sweeper
+
+Cada vuelta destruye los `alert_holds` con `destroy_at <= now` y borra las
+restricciones `DELETED` con `expires_at <= now`. Ambas reglas solo usan la base
+(corren con el circuito de S3 abierto), son idempotentes y seguras con varias
+réplicas, y loguean solo la cantidad.
+
 ## Regla de entrega según evidencia
 
 Al resolver el veredicto de IA (`ia.evidence.validated.*`), Alert decide si la
@@ -243,7 +333,8 @@ borra las alertas `REJECTED` y `EXPIRED` con `created_at` anterior a ella. Las
 Cada vuelta también anula `pending_ref` y `pending_until` de las alertas cuya
 entrega venció (`pending_until <= now`, ver "Entrega de alertas pendientes"): la
 alerta no se entrega a un dueño futuro, pero sigue existiendo, con su estado y
-sus destinatarios, para el emisor en Enviados.
+sus destinatarios, para el emisor en Enviados. Y destruye los registros de
+retención y las restricciones `DELETED` vencidos (ver "Baja de cuenta").
 
 ## Enviados (`GET /api/v1/alerts/sent`)
 
@@ -289,16 +380,17 @@ El buzón (`GET /api/v1/alerts/inbox`) suma `seen: bool` a cada ítem, que es el
 
 Todos salen por el transactional outbox, con el envelope estándar
 `{ eventId, eventType, timestamp, producer, actor, payload }`. El emisor
-viaja solo en `actor`, nunca en el payload.
+viaja solo en `actor`, nunca en el payload. Si la alerta ya no tiene emisor
+(dio de baja su cuenta), el evento sale **sin `actor`** (`null`).
 
 | `eventType` | `actor` | Payload |
 |---|---|---|
 | `alert.evidence.uploaded` | `null` | `{ alert_id, alert_type, pat_enc_ia, bucket, evidence }` |
-| `alert.created` | emisor | `{ owner_ids, alert_type, alert_id }` (`owner_ids` puede ser `[]`) |
-| `alert.rejected` | emisor | `{ alert_id, reason_codes }` |
-| `alert.expired` | emisor | `{ alert_id, alert_type }` |
-| `alert.seen` | emisor | `{ alert_id, alert_type }` |
-| `alert.reported` | emisor reportado | `{ alert_id, reason }` |
+| `alert.created` | emisor (`null` si dio de baja su cuenta) | `{ owner_ids, alert_type, alert_id }` (`owner_ids` puede ser `[]`) |
+| `alert.rejected` | emisor (`null` si dio de baja su cuenta) | `{ alert_id, reason_codes }` |
+| `alert.expired` | emisor (`null` si dio de baja su cuenta) | `{ alert_id, alert_type }` |
+| `alert.seen` | emisor (`null` si dio de baja su cuenta) | `{ alert_id, alert_type }` |
+| `alert.reported` | emisor reportado (`null` si dio de baja su cuenta) | `{ alert_id, reason }` |
 | `alert.pending.delivered` | `null` | `{ owner_ids: [dueño], count }` |
 
 ## Eventos consumidos
@@ -311,3 +403,4 @@ consume sobre topología existente, con ack manual, `prefetch` y `MAX_RETRIES`.
 | `alert.ia-evidence-validated.q` (`VERDICT_QUEUE`) | `ia.evidence.validated.*` | aplica el veredicto de IA |
 | `alert.user-status-changed.q` (`USER_STATUS_QUEUE`) | `user.status.changed` | bloquea la creación de alertas a los emisores `UNDER_REVIEW` |
 | `alert.vehicle-pending-claimed.q` (`PENDING_CLAIMED_QUEUE`) | `vehicle.pending.claimed` | entrega las alertas pendientes al primer dueño |
+| `alert.user-deleted.q` (`USER_DELETED_QUEUE`) | `user.deleted` | desvincula al usuario de sus alertas, crea los holds y fija la restricción `DELETED` (ver "Baja de cuenta") |

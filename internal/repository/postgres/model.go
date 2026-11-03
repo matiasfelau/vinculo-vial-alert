@@ -9,13 +9,18 @@ import (
 // AlertModel es la representación GORM de la tabla alerts.
 // Deliberadamente no incluye pat_enc: la tabla registra al emisor, el motivo
 // y el estado de la alerta, nunca la patente ni su criptograma.
+//
+// IssuerID es nulo cuando el emisor dio de baja su cuenta: la alerta sigue
+// existiendo para sus dueños, pero ya no apunta a nadie, y los eventos que
+// salen de ella no llevan actor. La copia de retención del emisor vive aislada
+// en legal_hold.alert_holds.
 type AlertModel struct {
-	ID             uuid.UUID `gorm:"type:uuid;primaryKey;index:idx_alerts_created_at_id,priority:2,sort:desc"`
-	IssuerID       uuid.UUID `gorm:"type:uuid;index;not null"`
-	AlertType      string    `gorm:"column:alert_type;type:varchar(64);not null"`
-	Status         string    `gorm:"type:varchar(32);not null;index:idx_alerts_status_created_at,priority:1"`
-	RequiresReview bool      `gorm:"column:requires_review;not null;default:false"`
-	CreatedAt      time.Time `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc;index:idx_alerts_status_created_at,priority:2"`
+	ID             uuid.UUID  `gorm:"type:uuid;primaryKey;index:idx_alerts_created_at_id,priority:2,sort:desc"`
+	IssuerID       *uuid.UUID `gorm:"type:uuid;index"`
+	AlertType      string     `gorm:"column:alert_type;type:varchar(64);not null"`
+	Status         string     `gorm:"type:varchar(32);not null;index:idx_alerts_status_created_at,priority:1"`
+	RequiresReview bool       `gorm:"column:requires_review;not null;default:false"`
+	CreatedAt      time.Time  `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc;index:idx_alerts_status_created_at,priority:2"`
 
 	// Resultado de la validación de IA. Se guardan para evaluar al modelo
 	// junto con el feedback de los dueños; son nulos hasta que llega el

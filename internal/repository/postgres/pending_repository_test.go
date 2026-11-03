@@ -24,7 +24,7 @@ func alertaPendiente(t *testing.T, db *gorm.DB, issuerID uuid.UUID, status domai
 
 	alert := AlertModel{
 		ID:           uuid.New(),
-		IssuerID:     issuerID,
+		IssuerID:     &issuerID,
 		AlertType:    string(domain.AlertTypeCrashed),
 		Status:       string(status),
 		CreatedAt:    ahoraPendiente.Add(-time.Hour),

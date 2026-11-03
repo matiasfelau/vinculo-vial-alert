@@ -26,10 +26,11 @@ func NewVerdictRepository(db *gorm.DB) *VerdictRepository {
 }
 
 // alertSummary es lo que hace falta leer de una alerta para armar sus
-// eventos.
+// eventos. IssuerID es nil si el emisor dio de baja su cuenta: sus eventos
+// salen sin actor.
 type alertSummary struct {
-	IssuerID  uuid.UUID `gorm:"column:issuer_id"`
-	AlertType string    `gorm:"column:alert_type"`
+	IssuerID  *uuid.UUID `gorm:"column:issuer_id"`
+	AlertType string     `gorm:"column:alert_type"`
 }
 
 // Activate implementa domain.VerdictRepository para GREEN y YELLOW.

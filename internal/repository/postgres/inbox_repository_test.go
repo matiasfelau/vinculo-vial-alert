@@ -29,7 +29,7 @@ func crearAlertaConEstado(t *testing.T, db *gorm.DB, issuerID uuid.UUID, alertTy
 
 	alert := AlertModel{
 		ID:        uuid.New(),
-		IssuerID:  issuerID,
+		IssuerID:  &issuerID,
 		AlertType: string(alertType),
 		Status:    string(status),
 		CreatedAt: createdAt,

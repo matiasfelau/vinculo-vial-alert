@@ -23,9 +23,10 @@ type SweeperRepository interface {
 	// ExpirePending pasa a EXPIRED las alertas todavía en PENDING_VALIDATION
 	// creadas antes de createdBefore y devuelve cuántas. La transición es
 	// condicional por alerta (no toca las que un veredicto ya resolvió) y, en
-	// la misma transacción, encola alert.expired (actor = emisor) solo por las
-	// que efectivamente transicionó: una réplica que pierde la carrera no
-	// publica nada. now es el instante de los eventos.
+	// la misma transacción, encola alert.expired (actor = emisor, ausente si la
+	// alerta ya no tiene emisor) solo por las que efectivamente transicionó:
+	// una réplica que pierde la carrera no publica nada. now es el instante de
+	// los eventos.
 	ExpirePending(ctx context.Context, createdBefore, now time.Time) (int64, error)
 	// DeleteExpiredSent borra las alertas REJECTED y EXPIRED creadas antes de
 	// createdBefore (la ventana de retención de Enviados) y devuelve cuántas.
@@ -41,4 +42,11 @@ type SweeperRepository interface {
 	FindExpiredRedacted(ctx context.Context, validatedBefore time.Time, limit int) ([]ExpiredRedacted, error)
 	// DeleteEvidenceRows borra las filas de evidencia con esos ids.
 	DeleteEvidenceRows(ctx context.Context, ids []uuid.UUID) error
+	// DeleteExpiredHolds destruye los registros de retención de
+	// legal_hold.alert_holds con destroy_at <= now y devuelve cuántos.
+	DeleteExpiredHolds(ctx context.Context, now time.Time) (int64, error)
+	// DeleteExpiredDeletedRestrictions borra las restricciones DELETED con
+	// expires_at <= now y devuelve cuántas. Pasado ese plazo ningún access token
+	// del usuario sigue siendo válido, así que la fila ya no sirve.
+	DeleteExpiredDeletedRestrictions(ctx context.Context, now time.Time) (int64, error)
 }

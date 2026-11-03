@@ -41,6 +41,7 @@ func nuevaDBLegacy(t *testing.T) *gorm.DB {
 		t.Fatalf("no se pudo obtener *sql.DB: %v", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
+	adjuntarLegalHold(t, db)
 
 	if err := db.Exec(ddlOutboxLegacy).Error; err != nil {
 		t.Fatalf("no se pudo crear el esquema viejo del outbox: %v", err)
@@ -256,6 +257,7 @@ func nuevaDBConAlertasLegacy(t *testing.T) (*gorm.DB, []uuid.UUID) {
 	if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
 		t.Fatalf("no se pudo activar foreign_keys: %v", err)
 	}
+	adjuntarLegalHold(t, db)
 	for _, ddl := range []string{ddlAlertsLegacy, ddlDestinationsLegacy} {
 		if err := db.Exec(ddl).Error; err != nil {
 			t.Fatalf("no se pudo crear el esquema viejo: %v", err)

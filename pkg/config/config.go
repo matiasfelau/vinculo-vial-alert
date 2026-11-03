@@ -47,10 +47,13 @@ type Config struct {
 	VerdictQueue                   string
 	UserStatusQueue                string
 	PendingClaimedQueue            string
+	UserDeletedQueue               string
 	EvidenceRetention              time.Duration
 	SentRetention                  time.Duration
 	PendingTimeout                 time.Duration
 	PendingDelivery                time.Duration
+	LegalHoldRetention             time.Duration
+	AccessTokenTTL                 time.Duration
 	SweeperInterval                time.Duration
 }
 
@@ -69,6 +72,7 @@ func Load() (Config, error) {
 		VerdictQueue:         getEnvDefault("VERDICT_QUEUE", "alert.ia-evidence-validated.q"),
 		UserStatusQueue:      getEnvDefault("USER_STATUS_QUEUE", "alert.user-status-changed.q"),
 		PendingClaimedQueue:  getEnvDefault("PENDING_CLAIMED_QUEUE", "alert.vehicle-pending-claimed.q"),
+		UserDeletedQueue:     getEnvDefault("USER_DELETED_QUEUE", "alert.user-deleted.q"),
 	}
 
 	required := map[string]string{
@@ -267,6 +271,17 @@ func Load() (Config, error) {
 	}
 	cfg.PendingDelivery = time.Duration(pendingDeliveryHours) * time.Hour
 
+	// LEGAL_HOLD_DAYS y ACCESS_TOKEN_TTL_MINUTES no tienen valor por defecto: las
+	// comparte con Identity, y un default que diverja de ese servicio acortaría o
+	// alargaría en silencio la retención legal o la ventana de la restricción
+	// DELETED. Ausentes o inválidas, el servicio no arranca.
+	if cfg.LegalHoldRetention, err = parseRequiredPositive("LEGAL_HOLD_DAYS", hoursPerDay); err != nil {
+		return Config{}, err
+	}
+	if cfg.AccessTokenTTL, err = parseRequiredPositive("ACCESS_TOKEN_TTL_MINUTES", time.Minute); err != nil {
+		return Config{}, err
+	}
+
 	if cfg.SweeperInterval, err = parsePositiveMillis("SWEEPER_INTERVAL_MS", "60000"); err != nil {
 		return Config{}, err
 	}
@@ -285,6 +300,23 @@ func parsePositiveMillis(key, fallback string) (time.Duration, error) {
 		return 0, fmt.Errorf("%s inválido: debe ser mayor o igual a 1, vino %d", key, millis)
 	}
 	return time.Duration(millis) * time.Millisecond, nil
+}
+
+// parseRequiredPositive lee una variable de entorno obligatoria que debe ser un
+// entero mayor o igual a 1 y la convierte a duración con la unidad dada.
+func parseRequiredPositive(key string, unit time.Duration) (time.Duration, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return 0, fmt.Errorf("variable de entorno obligatoria no definida: %s", key)
+	}
+	count, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s inválido: %w", key, err)
+	}
+	if count < 1 {
+		return 0, fmt.Errorf("%s inválido: debe ser mayor o igual a 1, vino %d", key, count)
+	}
+	return time.Duration(count) * unit, nil
 }
 
 func getEnvDefault(key, fallback string) string {

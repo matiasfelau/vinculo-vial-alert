@@ -18,6 +18,7 @@ services:
       VERDICT_QUEUE: ${VERDICT_QUEUE:-alert.ia-evidence-validated.q}
       USER_STATUS_QUEUE: ${USER_STATUS_QUEUE:-alert.user-status-changed.q}
       PENDING_CLAIMED_QUEUE: ${PENDING_CLAIMED_QUEUE:-alert.vehicle-pending-claimed.q}
+      USER_DELETED_QUEUE: ${USER_DELETED_QUEUE:-alert.user-deleted.q}
       RABBITMQ_PREFETCH: ${RABBITMQ_PREFETCH:-10}
       MAX_RETRIES: ${MAX_RETRIES:-5}
       S3_REGION: ${S3_REGION:?la variable S3_REGION es obligatoria en .env}
@@ -26,6 +27,9 @@ services:
       PENDING_TIMEOUT_MINUTES: ${PENDING_TIMEOUT_MINUTES:-1440}
       PENDING_DELIVERY_HOURS: ${PENDING_DELIVERY_HOURS:-24}
       SENT_RETENTION_DAYS: ${SENT_RETENTION_DAYS:-30}
+      # Compartidas con Identity: tienen que coincidir en los dos servicios.
+      LEGAL_HOLD_DAYS: ${LEGAL_HOLD_DAYS:-1095}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
       SWEEPER_INTERVAL_MS: ${SWEEPER_INTERVAL_MS:-60000}
       EVIDENCE_MAX_PART_BYTES: ${EVIDENCE_MAX_PART_BYTES:-1048576}
       S3_PUT_TIMEOUT_MS: ${S3_PUT_TIMEOUT_MS:-5000}
