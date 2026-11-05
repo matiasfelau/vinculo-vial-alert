@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,21 +13,7 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-var ahoraHolds = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-
-func insertarHold(t *testing.T, db *gorm.DB, destroyAt time.Time) uuid.UUID {
-	t.Helper()
-
-	alertID := uuid.New()
-	err := db.Exec(
-		"INSERT INTO "+alertHoldsTable+" (alert_id, issuer_id, alert_type, created_at, destroy_at) VALUES (?, ?, ?, ?, ?)",
-		alertID, uuid.New(), string(domain.AlertTypeCrashed), ahoraHolds.Add(-time.Hour), destroyAt,
-	).Error
-	if err != nil {
-		t.Fatalf("no se pudo insertar el hold: %v", err)
-	}
-	return alertID
-}
+var ahoraBaja = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
 func insertarRestriccionConVencimiento(t *testing.T, db *gorm.DB, status domain.AccountStatus, expiresAt *time.Time) uuid.UUID {
 	t.Helper()
@@ -36,7 +21,7 @@ func insertarRestriccionConVencimiento(t *testing.T, db *gorm.DB, status domain.
 	userID := uuid.New()
 	err := db.Exec(
 		"INSERT INTO issuer_restrictions (user_id, account_status, changed_at, expires_at) VALUES (?, ?, ?, ?)",
-		userID, string(status), ahoraHolds.Add(-time.Hour), expiresAt,
+		userID, string(status), ahoraBaja.Add(-time.Hour), expiresAt,
 	).Error
 	if err != nil {
 		t.Fatalf("no se pudo insertar la restricción: %v", err)
@@ -44,87 +29,17 @@ func insertarRestriccionConVencimiento(t *testing.T, db *gorm.DB, status domain.
 	return userID
 }
 
-func TestSweeperRepository_DeleteExpiredHolds_DestruyeSoloLosVencidos(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewSweeperRepository(db)
-	vencido := insertarHold(t, db, ahoraHolds.Add(-time.Second))
-	justoAhora := insertarHold(t, db, ahoraHolds)
-	vigente := insertarHold(t, db, ahoraHolds.Add(time.Second))
-	muyVigente := insertarHold(t, db, ahoraHolds.AddDate(3, 0, 0))
-
-	borrados, err := repo.DeleteExpiredHolds(context.Background(), ahoraHolds)
-	if err != nil {
-		t.Fatalf("error inesperado: %v", err)
-	}
-
-	if borrados != 2 {
-		t.Errorf("borrados = %d, se esperaban 2 (destroy_at <= now)", borrados)
-	}
-	holds := leerHolds(t, db)
-	if _, existe := holds[vencido]; existe {
-		t.Error("el hold vencido debía destruirse")
-	}
-	if _, existe := holds[justoAhora]; existe {
-		t.Error("el hold que vence justo ahora debía destruirse (destroy_at <= now)")
-	}
-	if _, existe := holds[vigente]; !existe {
-		t.Error("el hold vigente no debe destruirse")
-	}
-	if _, existe := holds[muyVigente]; !existe {
-		t.Error("el hold vigente no debe destruirse")
-	}
-}
-
-func TestSweeperRepository_DeleteExpiredHolds_EsIdempotenteYSinNadaQueBorrarNoFalla(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	repo := NewSweeperRepository(db)
-	insertarHold(t, db, ahoraHolds.Add(-time.Hour))
-
-	primera, err := repo.DeleteExpiredHolds(context.Background(), ahoraHolds)
-	if err != nil {
-		t.Fatalf("error inesperado: %v", err)
-	}
-	segunda, err := repo.DeleteExpiredHolds(context.Background(), ahoraHolds)
-	if err != nil {
-		t.Fatalf("error inesperado: %v", err)
-	}
-
-	if primera != 1 || segunda != 0 {
-		t.Errorf("borrados = %d y %d, se esperaban 1 y 0", primera, segunda)
-	}
-}
-
-func TestSweeperRepository_DeleteExpiredHolds_NoTocaLasAlertasNiLaEvidencia(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	alerta := insertarAlerta(t, db)
-	err := db.Exec(
-		"INSERT INTO "+alertHoldsTable+" (alert_id, issuer_id, alert_type, created_at, destroy_at) VALUES (?, ?, ?, ?, ?)",
-		alerta.ID, *alerta.IssuerID, alerta.AlertType, alerta.CreatedAt, ahoraHolds.Add(-time.Hour),
-	).Error
-	if err != nil {
-		t.Fatalf("no se pudo insertar el hold: %v", err)
-	}
-
-	if _, err := NewSweeperRepository(db).DeleteExpiredHolds(context.Background(), ahoraHolds); err != nil {
-		t.Fatalf("error inesperado: %v", err)
-	}
-
-	if contar(t, db, "alerts", "id = ?", alerta.ID) != 1 {
-		t.Error("destruir el registro de retención no debe borrar la alerta que siguen viendo sus dueños")
-	}
-}
-
 func TestSweeperRepository_DeleteExpiredDeletedRestrictions_BorraSoloLasDELETEDVencidas(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewSweeperRepository(db)
-	pasado, futuro, justoAhora := ahoraHolds.Add(-time.Minute), ahoraHolds.Add(time.Minute), ahoraHolds
+	pasado, futuro, justoAhora := ahoraBaja.Add(-time.Minute), ahoraBaja.Add(time.Minute), ahoraBaja
 	vencida := insertarRestriccionConVencimiento(t, db, domain.AccountStatusDeleted, &pasado)
 	venceAhora := insertarRestriccionConVencimiento(t, db, domain.AccountStatusDeleted, &justoAhora)
 	vigente := insertarRestriccionConVencimiento(t, db, domain.AccountStatusDeleted, &futuro)
 	enRevision := insertarRestriccionConVencimiento(t, db, domain.AccountStatusUnderReview, nil)
 	activa := insertarRestriccionConVencimiento(t, db, domain.AccountStatusActive, nil)
 
-	borradas, err := repo.DeleteExpiredDeletedRestrictions(context.Background(), ahoraHolds)
+	borradas, err := repo.DeleteExpiredDeletedRestrictions(context.Background(), ahoraBaja)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -153,10 +68,7 @@ func TestSweeperRepository_DeleteExpiredDeletedRestrictions_ContextoVencido_Clas
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	if _, err := repo.DeleteExpiredDeletedRestrictions(ctx, ahoraHolds); !errors.Is(err, domain.ErrDatabaseUnavailable) {
-		t.Fatalf("error = %v, se esperaba ErrDatabaseUnavailable", err)
-	}
-	if _, err := repo.DeleteExpiredHolds(ctx, ahoraHolds); !errors.Is(err, domain.ErrDatabaseUnavailable) {
+	if _, err := repo.DeleteExpiredDeletedRestrictions(ctx, ahoraBaja); !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba ErrDatabaseUnavailable", err)
 	}
 }
@@ -164,7 +76,7 @@ func TestSweeperRepository_DeleteExpiredDeletedRestrictions_ContextoVencido_Clas
 func TestRestrictionRepository_StatusOf_RestriccionVencidaNoRige(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewRestrictionRepository(db)
-	pasado, futuro := ahoraHolds.Add(-time.Second), ahoraHolds.Add(time.Second)
+	pasado, futuro := ahoraBaja.Add(-time.Second), ahoraBaja.Add(time.Second)
 	vencida := insertarRestriccionConVencimiento(t, db, domain.AccountStatusDeleted, &pasado)
 	vigente := insertarRestriccionConVencimiento(t, db, domain.AccountStatusDeleted, &futuro)
 	enRevision := insertarRestriccionConVencimiento(t, db, domain.AccountStatusUnderReview, nil)
@@ -177,7 +89,7 @@ func TestRestrictionRepository_StatusOf_RestriccionVencidaNoRige(t *testing.T) {
 		"DELETED vigente":                        {vigente, domain.AccountStatusDeleted},
 		"UNDER_REVIEW no vence nunca por tiempo": {enRevision, domain.AccountStatusUnderReview},
 	} {
-		got, err := repo.StatusOf(context.Background(), caso.userID, ahoraHolds)
+		got, err := repo.StatusOf(context.Background(), caso.userID, ahoraBaja)
 		if err != nil || got != caso.want {
 			t.Errorf("%s: StatusOf = %q, %v; se esperaba %q", nombre, got, err, caso.want)
 		}
@@ -244,74 +156,6 @@ func TestAutoMigrate_AlertasViejas_ConservaElCascadeTrasRelajarElEmisor(t *testi
 	}
 }
 
-func TestAutoMigrate_CreaElEsquemaLegalHoldConSusIndices(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-
-	columnas := columnasConNotNull(t, db, legalHoldSchema+".table_info(alert_holds)")
-	esperadas := map[string]bool{"alert_id": false, "issuer_id": true, "alert_type": true, "created_at": true, "destroy_at": true}
-	// El PK de SQLite no reporta NOT NULL en table_info; el resto sí.
-	for nombre, notNull := range esperadas {
-		got, existe := columnas[nombre]
-		if !existe {
-			t.Errorf("alert_holds: falta la columna %s", nombre)
-			continue
-		}
-		if got != notNull {
-			t.Errorf("alert_holds.%s: not null = %v, se esperaba %v", nombre, got, notNull)
-		}
-	}
-	if len(columnas) != len(esperadas) {
-		t.Errorf("columnas = %v, se esperaban exactamente %d", reflect.ValueOf(columnas).MapKeys(), len(esperadas))
-	}
-
-	var indices []string
-	err := db.Raw("SELECT name FROM " + legalHoldSchema + ".sqlite_master WHERE type = 'index' AND tbl_name = 'alert_holds' AND name NOT LIKE 'sqlite_autoindex%'").Scan(&indices).Error
-	if err != nil {
-		t.Fatalf("no se pudieron leer los índices: %v", err)
-	}
-	if !reflect.DeepEqual(sorted(indices), []string{"idx_alert_holds_destroy_at", "idx_alert_holds_issuer_id"}) {
-		t.Errorf("índices = %v, se esperaban issuer_id y destroy_at", indices)
-	}
-}
-
-func sorted(valores []string) []string {
-	copia := append([]string(nil), valores...)
-	for i := range copia {
-		for j := i + 1; j < len(copia); j++ {
-			if copia[j] < copia[i] {
-				copia[i], copia[j] = copia[j], copia[i]
-			}
-		}
-	}
-	return copia
-}
-
-func TestAutoMigrate_LegalHold_EsIdempotenteYConservaLosHolds(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-	hold := insertarHold(t, db, ahoraHolds.AddDate(1, 0, 0))
-
-	for i := 0; i < 2; i++ {
-		if err := AutoMigrate(db); err != nil {
-			t.Fatalf("AutoMigrate #%d falló: %v", i+1, err)
-		}
-	}
-
-	if _, existe := leerHolds(t, db)[hold]; !existe {
-		t.Error("migrar de nuevo no debe perder los holds")
-	}
-}
-
-func TestAlertHolds_ElEsquemaNoMezclaConLasTablasOperativas(t *testing.T) {
-	db := nuevaDBDePrueba(t)
-
-	if db.Migrator().HasTable("alert_holds") {
-		t.Error("alert_holds debe vivir solo en el esquema legal_hold, no junto a las tablas operativas")
-	}
-	if !strings.HasPrefix(alertHoldsTable, legalHoldSchema+".") {
-		t.Errorf("alertHoldsTable = %q, debe estar calificada con el esquema %s", alertHoldsTable, legalHoldSchema)
-	}
-}
-
 // ddlRestrictionsLegacy es issuer_restrictions tal como la dejó US-08, sin
 // expires_at, con el formato de GORM (ver ddlOutboxLegacy).
 const ddlRestrictionsLegacy = "CREATE TABLE `issuer_restrictions` (`user_id` uuid,`account_status` varchar(32) NOT NULL,`changed_at` timestamptz NOT NULL,PRIMARY KEY (`user_id`))"
@@ -322,7 +166,7 @@ func TestAutoMigrate_RestriccionesViejas_AgregaExpiresAtEnNuloSinPerderFilas(t *
 		t.Fatalf("no se pudo crear la tabla vieja: %v", err)
 	}
 	userID := uuid.New()
-	err := db.Exec("INSERT INTO issuer_restrictions (user_id, account_status, changed_at) VALUES (?, 'UNDER_REVIEW', ?)", userID, ahoraHolds).Error
+	err := db.Exec("INSERT INTO issuer_restrictions (user_id, account_status, changed_at) VALUES (?, 'UNDER_REVIEW', ?)", userID, ahoraBaja).Error
 	if err != nil {
 		t.Fatalf("no se pudo insertar la restricción vieja: %v", err)
 	}
@@ -334,7 +178,7 @@ func TestAutoMigrate_RestriccionesViejas_AgregaExpiresAtEnNuloSinPerderFilas(t *
 	if contar(t, db, "issuer_restrictions", "user_id = ? AND account_status = 'UNDER_REVIEW' AND expires_at IS NULL", userID) != 1 {
 		t.Error("la restricción vieja debía conservarse con expires_at en nulo: la revisión no vence por tiempo")
 	}
-	got, err := NewRestrictionRepository(db).StatusOf(context.Background(), userID, ahoraHolds.AddDate(1, 0, 0))
+	got, err := NewRestrictionRepository(db).StatusOf(context.Background(), userID, ahoraBaja.AddDate(1, 0, 0))
 	if err != nil || got != domain.AccountStatusUnderReview {
 		t.Errorf("StatusOf = %q, %v; el usuario en revisión debía seguir bloqueado", got, err)
 	}

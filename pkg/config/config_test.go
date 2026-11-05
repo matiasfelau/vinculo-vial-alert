@@ -65,9 +65,9 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("VERDICT_QUEUE", "")
 	t.Setenv("S3_REGION", "us-east-1")
 	t.Setenv("EVIDENCE_BUCKET", "vinculo-vial-evidence-test")
-	t.Setenv("LEGAL_HOLD_DAYS", "1095")
+	t.Setenv("IDENTITY_INTERNAL_URL", "http://identity:8081")
 	t.Setenv("ACCESS_TOKEN_TTL_MINUTES", "15")
-	for _, key := range []string{"EVIDENCE_MAX_PART_BYTES", "S3_PUT_TIMEOUT_MS", "S3_GET_TIMEOUT_MS", "S3_BREAKER_FAILURE_THRESHOLD", "S3_BREAKER_OPEN_DURATION_MS"} {
+	for _, key := range []string{"EVIDENCE_MAX_PART_BYTES", "S3_PUT_TIMEOUT_MS", "S3_GET_TIMEOUT_MS", "S3_BREAKER_FAILURE_THRESHOLD", "S3_BREAKER_OPEN_DURATION_MS", "IDENTITY_TIMEOUT_MS", "IDENTITY_BREAKER_FAILURE_THRESHOLD", "IDENTITY_BREAKER_OPEN_DURATION_MS"} {
 		t.Setenv(key, "")
 	}
 }

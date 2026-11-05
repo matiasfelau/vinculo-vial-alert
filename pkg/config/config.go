@@ -15,46 +15,49 @@ const hoursPerDay = 24 * time.Hour
 
 // Config agrupa los parámetros de configuración requeridos por el servicio.
 type Config struct {
-	Port                           string
-	DatabaseURL                    string
-	DBMaxOpenConns                 int
-	VehicleInternalURL             string
-	VehicleTimeout                 time.Duration
-	VehicleBreakerFailureThreshold int
-	VehicleBreakerOpenDuration     time.Duration
-	InternalServiceToken           string
-	RabbitMQURL                    string
-	RabbitMQExchange               string
-	RabbitMQPublishTimeout         time.Duration
-	HTTPReadHeaderTimeout          time.Duration
-	HTTPReadTimeout                time.Duration
-	HTTPWriteTimeout               time.Duration
-	OutboxWorkerInterval           time.Duration
-	OutboxWorkerBatchSize          int
-	HTTPIdleTimeout                time.Duration
-	ShutdownTimeout                time.Duration
-	RabbitMQPrefetch               int
-	MaxRetries                     int64
-	AttemptTTL                     time.Duration
-	RetryAfter                     time.Duration
-	S3Region                       string
-	EvidenceBucket                 string
-	EvidenceMaxPartBytes           int64
-	S3PutTimeout                   time.Duration
-	S3GetTimeout                   time.Duration
-	S3BreakerFailureThreshold      int
-	S3BreakerOpenDuration          time.Duration
-	VerdictQueue                   string
-	UserStatusQueue                string
-	PendingClaimedQueue            string
-	UserDeletedQueue               string
-	EvidenceRetention              time.Duration
-	SentRetention                  time.Duration
-	PendingTimeout                 time.Duration
-	PendingDelivery                time.Duration
-	LegalHoldRetention             time.Duration
-	AccessTokenTTL                 time.Duration
-	SweeperInterval                time.Duration
+	Port                            string
+	DatabaseURL                     string
+	DBMaxOpenConns                  int
+	VehicleInternalURL              string
+	VehicleTimeout                  time.Duration
+	VehicleBreakerFailureThreshold  int
+	VehicleBreakerOpenDuration      time.Duration
+	IdentityInternalURL             string
+	IdentityTimeout                 time.Duration
+	IdentityBreakerFailureThreshold int
+	IdentityBreakerOpenDuration     time.Duration
+	InternalServiceToken            string
+	RabbitMQURL                     string
+	RabbitMQExchange                string
+	RabbitMQPublishTimeout          time.Duration
+	HTTPReadHeaderTimeout           time.Duration
+	HTTPReadTimeout                 time.Duration
+	HTTPWriteTimeout                time.Duration
+	OutboxWorkerInterval            time.Duration
+	OutboxWorkerBatchSize           int
+	HTTPIdleTimeout                 time.Duration
+	ShutdownTimeout                 time.Duration
+	RabbitMQPrefetch                int
+	MaxRetries                      int64
+	AttemptTTL                      time.Duration
+	RetryAfter                      time.Duration
+	S3Region                        string
+	EvidenceBucket                  string
+	EvidenceMaxPartBytes            int64
+	S3PutTimeout                    time.Duration
+	S3GetTimeout                    time.Duration
+	S3BreakerFailureThreshold       int
+	S3BreakerOpenDuration           time.Duration
+	VerdictQueue                    string
+	UserStatusQueue                 string
+	PendingClaimedQueue             string
+	UserDeletedQueue                string
+	EvidenceRetention               time.Duration
+	SentRetention                   time.Duration
+	PendingTimeout                  time.Duration
+	PendingDelivery                 time.Duration
+	AccessTokenTTL                  time.Duration
+	SweeperInterval                 time.Duration
 }
 
 // Load construye la configuración a partir de variables de entorno.
@@ -64,6 +67,7 @@ func Load() (Config, error) {
 		Port:                 getEnvDefault("PORT", "8080"),
 		DatabaseURL:          os.Getenv("DATABASE_URL"),
 		VehicleInternalURL:   os.Getenv("VEHICLE_INTERNAL_URL"),
+		IdentityInternalURL:  os.Getenv("IDENTITY_INTERNAL_URL"),
 		InternalServiceToken: os.Getenv("INTERNAL_SERVICE_TOKEN"),
 		RabbitMQURL:          os.Getenv("RABBITMQ_URL"),
 		RabbitMQExchange:     os.Getenv("RABBITMQ_EXCHANGE"),
@@ -78,6 +82,7 @@ func Load() (Config, error) {
 	required := map[string]string{
 		"DATABASE_URL":           cfg.DatabaseURL,
 		"VEHICLE_INTERNAL_URL":   cfg.VehicleInternalURL,
+		"IDENTITY_INTERNAL_URL":  cfg.IdentityInternalURL,
 		"INTERNAL_SERVICE_TOKEN": cfg.InternalServiceToken,
 		"RABBITMQ_URL":           cfg.RabbitMQURL,
 		"RABBITMQ_EXCHANGE":      cfg.RabbitMQExchange,
@@ -107,6 +112,21 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("VEHICLE_BREAKER_OPEN_DURATION_MS inválido: %w", err)
 	}
 	cfg.VehicleBreakerOpenDuration = time.Duration(breakerOpenMS) * time.Millisecond
+
+	if cfg.IdentityTimeout, err = parsePositiveMillis("IDENTITY_TIMEOUT_MS", "2000"); err != nil {
+		return Config{}, err
+	}
+	if cfg.IdentityBreakerOpenDuration, err = parsePositiveMillis("IDENTITY_BREAKER_OPEN_DURATION_MS", "30000"); err != nil {
+		return Config{}, err
+	}
+	identityBreakerThreshold, err := strconv.Atoi(getEnvDefault("IDENTITY_BREAKER_FAILURE_THRESHOLD", "5"))
+	if err != nil {
+		return Config{}, fmt.Errorf("IDENTITY_BREAKER_FAILURE_THRESHOLD inválido: %w", err)
+	}
+	if identityBreakerThreshold < 1 {
+		return Config{}, fmt.Errorf("IDENTITY_BREAKER_FAILURE_THRESHOLD inválido: debe ser mayor o igual a 1, vino %d", identityBreakerThreshold)
+	}
+	cfg.IdentityBreakerFailureThreshold = identityBreakerThreshold
 
 	dbMaxOpenConns, err := strconv.Atoi(getEnvDefault("DB_MAX_OPEN_CONNS", "20"))
 	if err != nil {
@@ -271,13 +291,10 @@ func Load() (Config, error) {
 	}
 	cfg.PendingDelivery = time.Duration(pendingDeliveryHours) * time.Hour
 
-	// LEGAL_HOLD_DAYS y ACCESS_TOKEN_TTL_MINUTES no tienen valor por defecto: las
-	// comparte con Identity, y un default que diverja de ese servicio acortaría o
-	// alargaría en silencio la retención legal o la ventana de la restricción
-	// DELETED. Ausentes o inválidas, el servicio no arranca.
-	if cfg.LegalHoldRetention, err = parseRequiredPositive("LEGAL_HOLD_DAYS", hoursPerDay); err != nil {
-		return Config{}, err
-	}
+	// ACCESS_TOKEN_TTL_MINUTES no tiene valor por defecto: la comparte con
+	// Identity, y un default que diverja de ese servicio acortaría o alargaría en
+	// silencio la ventana de la restricción DELETED. Ausente o inválida, el
+	// servicio no arranca.
 	if cfg.AccessTokenTTL, err = parseRequiredPositive("ACCESS_TOKEN_TTL_MINUTES", time.Minute); err != nil {
 		return Config{}, err
 	}

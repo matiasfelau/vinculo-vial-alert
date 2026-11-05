@@ -106,13 +106,17 @@ func (h *AlertHandler) respondFailure(c *gin.Context, issuerID uuid.UUID, err er
 		respondError(c, http.StatusGone, codeAttemptExpired, "el intento venció")
 	case errors.Is(err, domain.ErrInvalidPlateCryptogram):
 		respondError(c, http.StatusBadRequest, codeInvalidPlateCryptogram, "el criptograma o el formato de la patente es inválido")
-	case errors.Is(err, domain.ErrVehicleUnavailable), errors.Is(err, domain.ErrEvidenceUnavailable), errors.Is(err, domain.ErrDatabaseUnavailable):
+	case errors.Is(err, domain.ErrVehicleUnavailable), errors.Is(err, domain.ErrIdentityUnavailable), errors.Is(err, domain.ErrAuditSealMissing),
+		errors.Is(err, domain.ErrEvidenceUnavailable), errors.Is(err, domain.ErrDatabaseUnavailable):
 		slog.Error("alerts handler: dependencia no disponible", "issuer_id", issuerID, "error", err.Error())
 		c.Header(headerRetryAfter, retryAfterSeconds(h.retryAfter))
 		respondError(c, http.StatusServiceUnavailable, codeDependencyUnavailable, "el servicio no está disponible")
 	case errors.Is(err, domain.ErrVehicleBadResponse), errors.Is(err, domain.ErrVehicleRejected):
 		slog.Error("alerts handler: vehicle devolvió un error", "issuer_id", issuerID, "error", err.Error())
 		respondError(c, http.StatusBadGateway, codeUpstreamBadGateway, "el servicio de vehículos no pudo procesar la solicitud")
+	case errors.Is(err, domain.ErrIdentityBadResponse), errors.Is(err, domain.ErrIdentityRejected):
+		slog.Error("alerts handler: identity devolvió un error", "issuer_id", issuerID, "error", err.Error())
+		respondError(c, http.StatusBadGateway, codeUpstreamBadGateway, "el servicio de identidad no pudo procesar la solicitud")
 	default:
 		slog.Error("alerts handler: error interno", "issuer_id", issuerID, "error", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "error interno"})

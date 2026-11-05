@@ -14,10 +14,7 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-const (
-	legalHoldDePrueba = 1095 * 24 * time.Hour
-	tokenTTLDePrueba  = 15 * time.Minute
-)
+const tokenTTLDePrueba = 15 * time.Minute
 
 // mundoDeLaBaja es el escenario común de las bajas: el usuario A, con alertas
 // emitidas y recibidas, y un usuario B ajeno cuyos datos no deben verse
@@ -84,7 +81,6 @@ func (m *mundoDeLaBaja) baja() domain.UserDeletion {
 	return domain.UserDeletion{
 		UserID:          m.a,
 		DeletedAt:       m.now,
-		DestroyAt:       m.now.Add(legalHoldDePrueba),
 		RestrictedUntil: m.now.Add(tokenTTLDePrueba),
 	}
 }
@@ -115,28 +111,6 @@ func (m *mundoDeLaBaja) encolar(t *testing.T, actor *uuid.UUID, status string) u
 	return event.ID
 }
 
-type holdLeido struct {
-	AlertID   uuid.UUID `gorm:"column:alert_id"`
-	IssuerID  uuid.UUID `gorm:"column:issuer_id"`
-	AlertType string    `gorm:"column:alert_type"`
-	CreatedAt string    `gorm:"column:created_at"`
-	DestroyAt string    `gorm:"column:destroy_at"`
-}
-
-func leerHolds(t *testing.T, db *gorm.DB) map[uuid.UUID]holdLeido {
-	t.Helper()
-
-	var filas []holdLeido
-	if err := db.Raw("SELECT alert_id, issuer_id, alert_type, created_at, destroy_at FROM " + alertHoldsTable).Scan(&filas).Error; err != nil {
-		t.Fatalf("no se pudieron leer los holds: %v", err)
-	}
-	holds := make(map[uuid.UUID]holdLeido, len(filas))
-	for _, fila := range filas {
-		holds[fila.AlertID] = fila
-	}
-	return holds
-}
-
 func instante(t *testing.T, raw string) time.Time {
 	t.Helper()
 
@@ -157,36 +131,6 @@ func emisorDe(t *testing.T, db *gorm.DB, alertID uuid.UUID) *uuid.UUID {
 	return emisor
 }
 
-func TestUserDeletionRepository_Apply_Emisor_CopiaCadaAlertaAlHoldConElPlazoDeDestruccion(t *testing.T) {
-	m := nuevoMundoDeLaBaja(t)
-
-	m.aplicar(t)
-
-	holds := leerHolds(t, m.db)
-	if len(holds) != 3 {
-		t.Fatalf("holds = %d, se esperaba uno por cada alerta emitida por A (cualquiera sea su estado)", len(holds))
-	}
-	for _, alertID := range []uuid.UUID{m.emitidaActiva, m.emitidaPendiente, m.emitidaRechazada} {
-		hold, ok := holds[alertID]
-		if !ok {
-			t.Fatalf("falta el hold de la alerta %v", alertID)
-		}
-		if hold.IssuerID != m.a {
-			t.Errorf("issuer_id del hold = %v, se esperaba el emisor dado de baja", hold.IssuerID)
-		}
-		if want := m.now.Add(legalHoldDePrueba); !instante(t, hold.DestroyAt).Equal(want) {
-			t.Errorf("destroy_at = %v, se esperaba deleted_at + LEGAL_HOLD_DAYS = %v", instante(t, hold.DestroyAt), want)
-		}
-	}
-	activa := holds[m.emitidaActiva]
-	if activa.AlertType != string(domain.AlertTypeCrashed) || !instante(t, activa.CreatedAt).Equal(m.now.Add(-3*time.Hour)) {
-		t.Errorf("hold = %+v, debía conservar el tipo y la fecha de creación de la alerta", activa)
-	}
-	if _, copiada := holds[m.ajena]; copiada {
-		t.Error("la alerta de B no se copia: A solo era destinatario")
-	}
-}
-
 func TestUserDeletionRepository_Apply_Emisor_AnulaElEmisorYLosDuenosSiguenViendoLaAlerta(t *testing.T) {
 	m := nuevoMundoDeLaBaja(t)
 
@@ -200,8 +144,8 @@ func TestUserDeletionRepository_Apply_Emisor_AnulaElEmisorYLosDuenosSiguenViendo
 	if emisor := emisorDe(t, m.db, m.ajena); emisor == nil || *emisor != m.b {
 		t.Errorf("issuer_id de la alerta ajena = %v, no debía tocarse", emisor)
 	}
-	if result.Holds != 3 || result.Detached != 3 {
-		t.Errorf("holds = %d, desvinculadas = %d; se esperaban 3 y 3", result.Holds, result.Detached)
+	if result.Detached != 3 {
+		t.Errorf("desvinculadas = %d, se esperaban 3", result.Detached)
 	}
 
 	items, err := NewInboxRepository(m.db).FindByOwner(context.Background(), m.duenoX, nil, 20)
@@ -391,26 +335,13 @@ func TestUserDeletionRepository_Apply_EsIdempotente_UnReintentoNoDuplicaNiCambia
 	m := nuevoMundoDeLaBaja(t)
 	primera := m.aplicar(t)
 
-	// El reintento llega con otro plazo (otra configuración): el hold original
-	// conserva su destroy_at.
-	reintento := m.baja()
-	reintento.DestroyAt = reintento.DestroyAt.Add(24 * time.Hour)
-	segunda, err := m.repo.Apply(context.Background(), reintento)
+	segunda, err := m.repo.Apply(context.Background(), m.baja())
 	if err != nil {
 		t.Fatalf("el reintento falló: %v", err)
 	}
 
-	holds := leerHolds(t, m.db)
-	if len(holds) != 3 {
-		t.Errorf("holds = %d tras el reintento, se esperaban 3 sin duplicar", len(holds))
-	}
-	for alertID, hold := range holds {
-		if want := m.now.Add(legalHoldDePrueba); !instante(t, hold.DestroyAt).Equal(want) {
-			t.Errorf("destroy_at de %v = %v, el reintento no debe pisarlo (se esperaba %v)", alertID, instante(t, hold.DestroyAt), want)
-		}
-	}
-	if primera.Holds != 3 || segunda.Holds != 0 || segunda.Detached != 0 || segunda.Recipients != 0 {
-		t.Errorf("primera = %+v, segunda = %+v; el reintento no encuentra nada que copiar ni borrar", primera, segunda)
+	if primera.Detached != 3 || segunda.Detached != 0 || segunda.Recipients != 0 {
+		t.Errorf("primera = %+v, segunda = %+v; el reintento no encuentra nada que desvincular ni borrar", primera, segunda)
 	}
 	if contar(t, m.db, "issuer_restrictions", "user_id = ?", m.a) != 1 {
 		t.Error("el reintento no debe duplicar la restricción")
@@ -427,10 +358,7 @@ func TestUserDeletionRepository_Apply_UsuarioSinAlertasNiDatos_SoloDejaLaRestric
 	result := m.aplicar(t)
 
 	if result != (domain.UserDeletionResult{}) {
-		t.Errorf("resultado = %+v, no había nada que copiar ni borrar", result)
-	}
-	if len(leerHolds(t, m.db)) != 0 {
-		t.Error("no debía crearse ningún hold")
+		t.Errorf("resultado = %+v, no había nada que desvincular ni borrar", result)
 	}
 	if contar(t, m.db, "issuer_restrictions", "user_id = ? AND account_status = 'DELETED'", m.a) != 1 {
 		t.Error("la restricción DELETED se fija igual: el access token del usuario sigue vigente")
@@ -439,8 +367,10 @@ func TestUserDeletionRepository_Apply_UsuarioSinAlertasNiDatos_SoloDejaLaRestric
 
 func TestUserDeletionRepository_Apply_FallaAMitad_RevierteTodo(t *testing.T) {
 	m := nuevoMundoDeLaBaja(t)
-	if err := m.db.Exec("DROP TABLE " + alertHoldsTable).Error; err != nil {
-		t.Fatalf("no se pudo romper la tabla de holds: %v", err)
+	// Los reportes son el último paso de la baja: si falla, todo lo anterior se
+	// revierte.
+	if err := m.db.Exec("DROP TABLE alert_reports").Error; err != nil {
+		t.Fatalf("no se pudo romper la tabla de reportes: %v", err)
 	}
 
 	_, err := m.repo.Apply(context.Background(), m.baja())
@@ -455,7 +385,7 @@ func TestUserDeletionRepository_Apply_FallaAMitad_RevierteTodo(t *testing.T) {
 		t.Error("no debía quedar la restricción DELETED")
 	}
 	if emisor := emisorDe(t, m.db, m.emitidaActiva); emisor == nil || *emisor != m.a {
-		t.Error("el emisor no debía anularse sin haber guardado antes el hold")
+		t.Error("el emisor no debía anularse si la baja no se completó")
 	}
 	if contar(t, m.db, "alert_destinations", "owner_id = ?", m.a) != 1 {
 		t.Error("los destinatarios de A debían conservarse")
@@ -490,7 +420,7 @@ func TestUserDeletionRepository_EventosPosteriores_SalenSinActor(t *testing.T) {
 			Scores: []byte(`{}`), ModelVersions: []byte(`{}`),
 		}
 
-		resolution, err := NewVerdictRepository(m.db).Activate(ctx, resultado, m.now)
+		resolution, err := NewVerdictRepository(m.db, bucketDePrueba).Activate(ctx, resultado, m.now)
 
 		if err != nil || !resolution.Applied {
 			t.Fatalf("resolution = %+v, err = %v", resolution, err)
@@ -509,7 +439,7 @@ func TestUserDeletionRepository_EventosPosteriores_SalenSinActor(t *testing.T) {
 		m.aplicar(t)
 		resultado := domain.ValidationResult{AlertID: m.emitidaPendiente, Verdict: domain.VerdictRed, ReasonCodes: []domain.ReasonCode{domain.ReasonNoVehicle}}
 
-		resolution, err := NewVerdictRepository(m.db).Reject(ctx, resultado, m.now)
+		resolution, err := NewVerdictRepository(m.db, bucketDePrueba).Reject(ctx, resultado, m.now)
 
 		if err != nil || !resolution.Applied {
 			t.Fatalf("resolution = %+v, err = %v", resolution, err)
@@ -618,7 +548,7 @@ func TestUserDeletionRepository_AlertaPendienteDeUnEmisorDadoDeBaja_SeEntregaAlP
 	m.aplicar(t)
 	nuevoDueno := uuid.New()
 
-	delivery, err := NewPendingRepository(m.db).Deliver(context.Background(), domain.PendingClaim{PendingRef: ref, OwnerID: nuevoDueno}, ahoraPendiente)
+	delivery, err := NewPendingRepository(m.db, bucketDePrueba).Deliver(context.Background(), domain.PendingClaim{PendingRef: ref, OwnerID: nuevoDueno}, ahoraPendiente)
 
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -634,21 +564,16 @@ func TestUserDeletionRepository_AlertaPendienteDeUnEmisorDadoDeBaja_SeEntregaAlP
 	}
 }
 
-func TestAlertHolds_SoloLosTocanLaBajaElSweeperYLaMigracion(t *testing.T) {
-	// Ningún endpoint lee los holds: solo la baja (los escribe), el sweeper (los
-	// destruye) y la migración (los crea) mencionan la tabla.
-	permitidos := map[string]bool{
-		"user_deletion_repository.go": true,
-		"sweeper_repository.go":       true,
-		"migrate.go":                  true,
-	}
+func TestLegalHold_SoloLaMigracionMencionaElEsquemaRetirado(t *testing.T) {
+	// El registro de retención lo guarda Audit. Del esquema legal_hold solo queda
+	// la migración que lo borra: ningún otro código puede volver a tocarlo.
 	archivos, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("no se pudo listar el paquete: %v", err)
 	}
 	for _, archivo := range archivos {
 		nombre := archivo.Name()
-		if !strings.HasSuffix(nombre, ".go") || strings.HasSuffix(nombre, "_test.go") || permitidos[nombre] {
+		if !strings.HasSuffix(nombre, ".go") || strings.HasSuffix(nombre, "_test.go") || nombre == "migrate.go" {
 			continue
 		}
 		contenido, err := os.ReadFile(nombre)
@@ -660,10 +585,37 @@ func TestAlertHolds_SoloLosTocanLaBajaElSweeperYLaMigracion(t *testing.T) {
 			if strings.HasPrefix(codigo, "//") {
 				continue
 			}
-			if strings.Contains(codigo, "alertHoldsTable") || strings.Contains(codigo, "alert_holds") {
-				t.Errorf("%s toca los holds en %q: ninguna lectura puede tocarlos", nombre, codigo)
+			if strings.Contains(codigo, "legal_hold") || strings.Contains(codigo, "alert_holds") || strings.Contains(codigo, "legalHold") {
+				t.Errorf("%s menciona el esquema retirado en %q", nombre, codigo)
 				break
 			}
 		}
+	}
+}
+
+// Los criptogramas de Audit viven solo en el outbox: la baja del emisor no toca
+// el payload de audit.alert.recorded que todavía no salió.
+func TestUserDeletionRepository_Apply_NoAlteraElPayloadDeAuditRecorded(t *testing.T) {
+	m := nuevoMundoDeLaBaja(t)
+	recorded, err := domain.NewAuditRecordedEvent(uuid.New(), domain.AuditRecordedPayload{
+		AlertID: m.emitidaPendiente, AlertType: domain.AlertTypeCrashed, CreatedAt: m.now,
+		DNIEncAudit: "ZG5p", PatEncAudit: "cGF0", AuditKeyID: "2026-11",
+	}, m.now)
+	if err != nil {
+		t.Fatalf("no se pudo construir el evento: %v", err)
+	}
+	row := outboxEventToModel(&recorded)
+	if err := m.db.Create(&row).Error; err != nil {
+		t.Fatalf("no se pudo encolar el evento: %v", err)
+	}
+
+	m.aplicar(t)
+
+	eventos := eventosDeTipo(t, m.db, domain.EventTypeAuditRecorded)
+	if len(eventos) != 1 || eventos[0].actor != nil {
+		t.Fatalf("eventos = %+v, se esperaba el audit.alert.recorded sin actor", eventos)
+	}
+	if eventos[0].payload != string(recorded.Payload) {
+		t.Errorf("payload = %s, la baja no debe alterarlo (era %s)", eventos[0].payload, recorded.Payload)
 	}
 }

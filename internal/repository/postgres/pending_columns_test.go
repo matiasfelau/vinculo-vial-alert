@@ -27,7 +27,7 @@ func escenarioSinDuenos(t *testing.T) (*escenario, *VerdictRepository, uuid.UUID
 	if err := e.crear(); err != nil {
 		t.Fatalf("no se pudo crear la alerta sin dueños: %v", err)
 	}
-	return e, NewVerdictRepository(e.db), ref
+	return e, NewVerdictRepository(e.db, bucketDePrueba), ref
 }
 
 type pendienteLeida struct {

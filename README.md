@@ -4,11 +4,13 @@ Servicio de alertas del sistema Vínculo Vial. Crear una alerta es un flujo
 en dos llamadas: `POST /api/v1/alerts/attempts` controla que el emisor no esté
 en revisión y guarda un intento con TTL (solo un id, sin consultar el
 vehículo); `POST /api/v1/alerts` (multipart) resuelve los dueños a través de
-`vinculo-vial-vehicle` sin descifrar la patente, consume ese intento, sube las
+`vinculo-vial-vehicle` sin descifrar la patente, pide a `vinculo-vial-identity` el
+DNI del emisor sellado para Audit, consume ese intento, sube las
 fotos cifradas a AWS S3 sin poder leerlas y registra la alerta en
-`PENDING_VALIDATION`, con o sin dueños y con la misma respuesta. El evento `alert.evidence.uploaded` se
-persiste en la misma transacción que la alerta (patrón transactional
-outbox) y un worker en background lo publica en RabbitMQ: la creación de
+`PENDING_VALIDATION`, con o sin dueños y con la misma respuesta. Los eventos
+`alert.evidence.uploaded` y `audit.alert.recorded` (ver "Registro de Audit") se
+persisten en la misma transacción que la alerta (patrón transactional
+outbox) y un worker en background los publica en RabbitMQ: la creación de
 la alerta no depende de que el broker esté disponible en ese momento.
 
 ## Requisitos
@@ -86,6 +88,7 @@ El servicio sigue Clean Architecture:
 /internal/delivery/http    handlers HTTP (Gin)
 /internal/delivery/events  publicación y consumo de eventos (RabbitMQ)
 /internal/client/vehicle   cliente hacia el endpoint interno de Vehicle
+/internal/client/identity  cliente hacia el endpoint interno de Identity (DNI sellado para Audit)
 /internal/client/storage   cliente de la evidencia sobre AWS S3
 /internal/validation       validación de entrada
 /pkg/config                configuración por variables de entorno
@@ -120,12 +123,14 @@ lo reenvía a Vehicle sin abrirlo ni guardarlo. El orden es deliberado:
    intento sigue vigente para que la app reintente: Vehicle `400` →
    `400 INVALID_PLATE_CRYPTOGRAM`; timeout, conexión o circuito abierto →
    `503 DEPENDENCY_UNAVAILABLE` con `Retry-After`; `5xx`, respuesta inválida u
-   otro `4xx` → `502 UPSTREAM_BAD_GATEWAY`;
+   otro `4xx` → `502 UPSTREAM_BAD_GATEWAY`. En paralelo con Vehicle se llama a
+   Identity para el registro de Audit (ver "Registro de Audit": `404` →
+   `403 ACCOUNT_DELETED`, caído → `503`, respuesta inválida → `502`);
 3. se descarta al emisor de los dueños (y los repetidos): lo que queda son los
    destinatarios, que pueden ser ninguno;
 4. subida de los originales a S3, y en una transacción la alerta
    `PENDING_VALIDATION`, sus destinatarios, su evidencia y el outbox de
-   `alert.evidence.uploaded`;
+   `alert.evidence.uploaded` y de `audit.alert.recorded`;
 5. `202 { alert_id, status: PENDING_VALIDATION }`, idéntico en todos los casos.
 
 Vehicle devuelve `pat_enc_ia` siempre, también cuando la patente no tiene
@@ -209,9 +214,7 @@ En **una transacción idempotente** (`UserDeletionRepository.Apply`):
 1. borra los intentos del usuario (`alert_attempts`);
 2. reemplaza su fila de `issuer_restrictions` por `DELETED` con `expires_at =
    deleted_at + ACCESS_TOKEN_TTL_MINUTES`;
-3. copia cada alerta que emitió, sea cual sea su estado, a
-   `legal_hold.alert_holds` (`destroy_at = deleted_at + LEGAL_HOLD_DAYS`) y anula
-   su `issuer_id`;
+3. anula el `issuer_id` de cada alerta que emitió, sea cual sea su estado;
 4. anula el `actor` de los eventos del outbox todavía sin publicar de esas alertas;
 5. como dueño, borra sus filas de `alert_destinations`, `alert_feedback` y
    `alert_reports`.
@@ -220,7 +223,7 @@ Los intentos se borran **primero** a propósito: `POST /alerts` consume su inten
 con un `DELETE` condicional dentro de la transacción que inserta la alerta, y ese
 `DELETE` y el de la baja se serializan sobre la misma fila. Si la creación en
 vuelo gana, la baja espera su commit y los pasos siguientes ya ven la alerta
-nueva, así que la copian y la desvinculan; si gana la baja, la creación no
+nueva, así que la desvinculan; si gana la baja, la creación no
 encuentra el intento y responde `410`. En ningún orden queda una alerta con el
 emisor dado de baja.
 
@@ -234,30 +237,11 @@ confirma sin efecto (no hay a quién poner en revisión). La falta de `actor`
 nunca manda un mensaje a la DLQ.
 
 **Idempotencia.** Un reintento o un duplicado no encuentra alertas con ese
-`issuer_id` (ya quedaron en nulo), no encuentra filas del dueño que borrar y no
-duplica holds: el `INSERT` de `alert_holds` es `ON CONFLICT (alert_id) DO NOTHING`,
-así que además conserva el `destroy_at` original.
+`issuer_id` (ya quedaron en nulo) ni filas del dueño que borrar, y no cambia nada.
 
-### Registro de retención (`legal_hold.alert_holds`)
-
-Registro mínimo, por 3 años (art. 16 inc. 5 de la Ley 25.326), aislado de las
-tablas operativas en el esquema `legal_hold` y destruido al vencer (art. 4 inc. 7):
-
-| Columna | Tipo | Nota |
-|---|---|---|
-| `alert_id` | `uuid` PK | |
-| `issuer_id` | `uuid` not null, indexada | el emisor dado de baja |
-| `alert_type` | `varchar(64)` | |
-| `created_at` | `timestamptz` | de la alerta |
-| `destroy_at` | `timestamptz` not null, indexada | `deleted_at + LEGAL_HOLD_DAYS` |
-
-Ningún endpoint lee los holds (un test lo verifica sobre el código): solo los
-escribe la baja y los destruye el sweeper. Nunca se loguean sus datos; el log de
-la baja lleva solo cantidades. Es una copia de la alerta, no la alerta: destruirla
-no toca la alerta que siguen viendo sus dueños. El esquema lo crea la migración
-(`CREATE SCHEMA IF NOT EXISTS legal_hold`); en producción conviene que el acceso a
-ese esquema sea con un rol de base de datos propio, que se otorga por fuera de la
-aplicación.
+El registro de retención de lo que el usuario emitió **no vive en Alert**: lo guarda
+el Audit Service desde el envío de la alerta (ver "Registro de Audit"), y una baja
+no lo toca.
 
 ### Restricción `DELETED`
 
@@ -275,10 +259,107 @@ restricción `DELETED`.
 
 ### Sweeper
 
-Cada vuelta destruye los `alert_holds` con `destroy_at <= now` y borra las
-restricciones `DELETED` con `expires_at <= now`. Ambas reglas solo usan la base
-(corren con el circuito de S3 abierto), son idempotentes y seguras con varias
-réplicas, y loguean solo la cantidad.
+Cada vuelta borra las restricciones `DELETED` con `expires_at <= now`. La regla solo
+usa la base (corre con el circuito de S3 abierto), es idempotente y segura con
+varias réplicas, y loguea solo la cantidad.
+
+## Registro de Audit (US-11)
+
+Cada alerta que llega a un destinatario deja un registro en el Audit Service
+(`vinculo-vial-audit`), aislado, inmutable y que solo se abre ante un
+requerimiento judicial. Alert no guarda ni abre nada de eso: transporta dos
+criptogramas HPKE hacia la clave pública de Audit, cuya clave privada no tiene
+ningún servicio, y emite tres eventos por el outbox. Todos salen con
+`actor = null`: no identifican al emisor en claro.
+
+### Llamada a Identity
+
+`POST /api/v1/alerts` llama **en paralelo** a Vehicle (`resolve-owner`, que ahora
+suma `pat_enc_audit` y `audit_key_id`) y a Identity (`POST /internal/audit/dni
+{ user_id, alert_id }`, que devuelve `dni_enc_audit` y `audit_key_id`), antes de
+subir la evidencia. Identity abre el DNI del emisor, lo sella hacia Audit con
+`info = "vv-audit:dni:" + alert_id` y devuelve solo el criptograma; Alert nunca ve
+el DNI en claro. La llamada usa el mismo patrón que la de Vehicle: timeout propio
+(`IDENTITY_TIMEOUT_MS`, 2000), circuit breaker propio
+(`IDENTITY_BREAKER_FAILURE_THRESHOLD`, `IDENTITY_BREAKER_OPEN_DURATION_MS`) y el
+`X-Internal-Service-Token` (`INTERNAL_SERVICE_TOKEN`). Como las dos corren a la
+vez, el máximo es el del más lento y no la suma, y entra en los 9 s de Kong.
+
+Ninguna alerta se crea sin su registro (fail-closed). Los errores ocurren antes de
+subir la evidencia y del `202`, y el intento sigue vigente:
+
+| Caso | Respuesta |
+|---|---|
+| Identity responde `404 USER_NOT_FOUND` | `403 ACCOUNT_DELETED` |
+| Identity o Vehicle caídos, en timeout o con el circuito abierto | `503 DEPENDENCY_UNAVAILABLE` con `Retry-After` |
+| Respuesta sin `dni_enc_audit` o sin `pat_enc_audit`, sin `audit_key_id`, con algún criptograma que no es base64, o con `audit_key_id` distintos en Identity y Vehicle | `503 DEPENDENCY_UNAVAILABLE`, y log `ERROR` sin valores |
+| Identity responde `5xx` o algo inválido, u otro `4xx` (por ejemplo un token interno inválido) | `502 UPSTREAM_BAD_GATEWAY` |
+
+Un `404` sin el `code` `USER_NOT_FOUND` (una ruta mal configurada, por ejemplo) no
+se toma por una baja de cuenta: se trata como un rechazo (`502`), para no bloquear
+a todos los emisores. El `404` y el resto de los `4xx` no cuentan para el circuit
+breaker. Si fallan Vehicle e Identity a la vez, gana el error de Vehicle.
+
+### Estado del registro: `alerts.audit_state`
+
+Columna `varchar(16)` nula. Nula significa alerta anterior al deploy de Audit, que
+**nunca emite** `delivered` ni `discarded`. Toda alerta nueva nace `RECORDED` y
+después pasa a `DELIVERED` o `DISCARDED`, una sola vez y sin volver atrás: cada
+transición es un `UPDATE ... WHERE audit_state = 'RECORDED'`, y el evento se
+escribe en la misma transacción solo si afectó una fila.
+
+| Evento | Cuándo | Payload |
+|---|---|---|
+| `audit.alert.recorded` | en la transacción de creación de la alerta, junto con `alert.evidence.uploaded` | `{ alert_id, alert_type, created_at, dni_enc_audit, pat_enc_audit, audit_key_id }` |
+| `audit.alert.delivered` | la primera vez que la alerta queda `ACTIVE` con al menos un destinatario | `{ alert_id, delivered_at, bucket, evidence: [{ role, index, key, sha256 }] }`, solo las redactadas; `bucket` = `EVIDENCE_BUCKET` |
+| `audit.alert.discarded` | la alerta ya no puede llegar a nadie | `{ alert_id, reason }` |
+
+`delivered` sale por dos caminos: un veredicto GREEN o YELLOW sobre una alerta con
+destinatarios, o la entrega de una pendiente (`PendingRepository.Deliver`) a una
+alerta que ya era `ACTIVE`. Una alerta que seguía en validación cuando se la
+entregó espera su veredicto.
+
+`discarded` sale en cuatro casos:
+
+| Transición | `reason` |
+|---|---|
+| RED, la alerta pasa a `REJECTED` | `REJECTED` |
+| `ExpirePending`, la alerta pasa a `EXPIRED` | `EXPIRED` |
+| veredicto GREEN o YELLOW sin destinatarios y sin entrega pendiente vigente (`pending_ref` nulo o `pending_until <= now`) | `UNCLAIMED` |
+| `ClearExpiredPending` sobre una alerta `ACTIVE` sin destinatarios | `UNCLAIMED` |
+
+Una alerta `PENDING_VALIDATION` cuya entrega pendiente vence solo pierde la
+referencia; se resuelve cuando llega su veredicto. Un `discarded` nunca sale
+después de un `delivered`: que el dueño se dé de baja después de la entrega no
+descarta nada (el estado ya es `DELIVERED`).
+
+### SHA-256 de las redactadas
+
+`audit.alert.delivered` lleva el SHA-256 de cada imagen redactada, y el evento de IA
+(`ia.evidence.validated`) no lo trae. Por eso el consumidor del veredicto lee cada
+redactada del almacén en streaming y calcula el hash **antes** de la transacción
+(nunca se lee S3 con una transacción abierta); queda en `alert_evidence.sha256`. Si
+el almacén no responde, el mensaje se reintenta. Si el objeto no existe, sigue sin
+hash: con un veredicto duplicado no hace falta, y si hacía falta (la primera
+activación de una alerta con registro) la transacción falla sola y el mensaje se
+reintenta, así que nunca sale un `delivered` que Audit no pueda verificar.
+
+### Los criptogramas viven solo en el outbox
+
+`dni_enc_audit` y `pat_enc_audit` no se guardan en ninguna tabla de dominio. Al
+marcar como enviado un `audit.alert.recorded`, su `payload` pasa a `'{}'` en el
+mismo `UPDATE` (`OutboxRepository.MarkSent`); mientras no se publique, el payload
+se conserva para poder reintentar. Ningún otro evento cambia. Nunca se loguean los
+criptogramas ni los payloads de `audit.*`. La baja del emisor no altera el
+payload de un `recorded` pendiente: los eventos de Audit no tienen `actor`.
+
+### Retiro de `legal_hold`
+
+El registro de retención de US-11 vivía en `legal_hold.alert_holds`; lo reemplazó
+Audit. La migración (`AutoMigrate`) borra el esquema con `DROP SCHEMA IF EXISTS
+legal_hold CASCADE`, es idempotente y **destruye los registros que hubiera**: antes
+de desplegar hay que confirmar que ya están en Audit o que no hay nada que
+conservar. `LEGAL_HOLD_DAYS` ya no se lee ni se exige.
 
 ## Regla de entrega según evidencia
 
@@ -333,8 +414,9 @@ borra las alertas `REJECTED` y `EXPIRED` con `created_at` anterior a ella. Las
 Cada vuelta también anula `pending_ref` y `pending_until` de las alertas cuya
 entrega venció (`pending_until <= now`, ver "Entrega de alertas pendientes"): la
 alerta no se entrega a un dueño futuro, pero sigue existiendo, con su estado y
-sus destinatarios, para el emisor en Enviados. Y destruye los registros de
-retención y las restricciones `DELETED` vencidos (ver "Baja de cuenta").
+sus destinatarios, para el emisor en Enviados. Si es una alerta `ACTIVE` sin
+destinatarios, su registro de Audit se descarta (`UNCLAIMED`, ver "Registro de
+Audit"). Y borra las restricciones `DELETED` vencidas (ver "Baja de cuenta").
 
 ## Enviados (`GET /api/v1/alerts/sent`)
 
@@ -392,6 +474,9 @@ viaja solo en `actor`, nunca en el payload. Si la alerta ya no tiene emisor
 | `alert.seen` | emisor (`null` si dio de baja su cuenta) | `{ alert_id, alert_type }` |
 | `alert.reported` | emisor reportado (`null` si dio de baja su cuenta) | `{ alert_id, reason }` |
 | `alert.pending.delivered` | `null` | `{ owner_ids: [dueño], count }` |
+| `audit.alert.recorded` | `null` | `{ alert_id, alert_type, created_at, dni_enc_audit, pat_enc_audit, audit_key_id }` (se purga a `{}` al publicarse) |
+| `audit.alert.delivered` | `null` | `{ alert_id, delivered_at, bucket, evidence: [{ role, index, key, sha256 }] }` |
+| `audit.alert.discarded` | `null` | `{ alert_id, reason }` (`REJECTED`, `EXPIRED` o `UNCLAIMED`) |
 
 ## Eventos consumidos
 
@@ -403,4 +488,4 @@ consume sobre topología existente, con ack manual, `prefetch` y `MAX_RETRIES`.
 | `alert.ia-evidence-validated.q` (`VERDICT_QUEUE`) | `ia.evidence.validated.*` | aplica el veredicto de IA |
 | `alert.user-status-changed.q` (`USER_STATUS_QUEUE`) | `user.status.changed` | bloquea la creación de alertas a los emisores `UNDER_REVIEW` |
 | `alert.vehicle-pending-claimed.q` (`PENDING_CLAIMED_QUEUE`) | `vehicle.pending.claimed` | entrega las alertas pendientes al primer dueño |
-| `alert.user-deleted.q` (`USER_DELETED_QUEUE`) | `user.deleted` | desvincula al usuario de sus alertas, crea los holds y fija la restricción `DELETED` (ver "Baja de cuenta") |
+| `alert.user-deleted.q` (`USER_DELETED_QUEUE`) | `user.deleted` | desvincula al usuario de sus alertas y fija la restricción `DELETED` (ver "Baja de cuenta") |

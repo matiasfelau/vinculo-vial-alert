@@ -94,12 +94,49 @@ type resolverDePrueba struct {
 	calls    int
 	patEnc   string
 	alertID  uuid.UUID
+	// sinAuditoria devuelve la respuesta tal cual está en resolved. Por defecto el
+	// doble completa pat_enc_audit y audit_key_id, que Vehicle devuelve siempre.
+	sinAuditoria bool
+}
+
+const (
+	patEncAuditDePrueba = "Y3JpcHRvZ3JhbWEtYXVkaXQtcGF0ZW50ZQ=="
+	dniEncAuditDePrueba = "Y3JpcHRvZ3JhbWEtYXVkaXQtZG5p"
+	auditKeyIDDePrueba  = "clave-audit-1"
+)
+
+// sealerDePrueba es el doble de Identity: devuelve el DNI sellado configurado (o
+// uno válido por defecto) y registra las llamadas.
+type sealerDePrueba struct {
+	sealed *domain.SealedDNI
+	err    error
+	calls  int
+}
+
+func (m *sealerDePrueba) SealDNI(_ context.Context, _, _ uuid.UUID) (domain.SealedDNI, error) {
+	m.calls++
+	if m.err != nil {
+		return domain.SealedDNI{}, m.err
+	}
+	if m.sealed != nil {
+		return *m.sealed, nil
+	}
+	return domain.SealedDNI{DNIEncAudit: dniEncAuditDePrueba, AuditKeyID: auditKeyIDDePrueba}, nil
 }
 
 func (m *resolverDePrueba) ResolveOwners(_ context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
 	m.calls++
 	m.patEnc, m.alertID = patEnc, alertID
-	return m.resolved, m.err
+	resolved := m.resolved
+	if !m.sinAuditoria {
+		if resolved.PatEncAudit == "" {
+			resolved.PatEncAudit = patEncAuditDePrueba
+		}
+		if resolved.AuditKeyID == "" {
+			resolved.AuditKeyID = auditKeyIDDePrueba
+		}
+	}
+	return resolved, m.err
 }
 
 // conDuenos es la respuesta de Vehicle para una patente con dos dueños.
@@ -125,7 +162,7 @@ type mockAlerts struct {
 	event    domain.OutboxEvent
 }
 
-func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, event domain.OutboxEvent) error {
+func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, events ...domain.OutboxEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.err != nil {
@@ -138,7 +175,7 @@ func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain
 		}
 	}
 	m.created = append(m.created, *alert)
-	m.owners, m.evidence, m.event = owners, evidence, event
+	m.owners, m.evidence, m.event = owners, evidence, events[0]
 	return nil
 }
 
@@ -261,6 +298,7 @@ func (m *mockOwnerRepo) CreateReport(_ context.Context, _, ownerID uuid.UUID, re
 type testDeps struct {
 	restrictions *mockRestrictions
 	resolver     *resolverDePrueba
+	sealer       *sealerDePrueba
 	attempts     *mockAttempts
 	alerts       *mockAlerts
 	store        *mockStore
@@ -271,6 +309,7 @@ func nuevasDeps() *testDeps {
 	return &testDeps{
 		restrictions: &mockRestrictions{},
 		resolver:     &resolverDePrueba{resolved: conDuenos()},
+		sealer:       &sealerDePrueba{},
 		attempts:     &mockAttempts{},
 		alerts:       &mockAlerts{},
 		store:        &mockStore{},
@@ -280,7 +319,7 @@ func nuevasDeps() *testDeps {
 
 func (d *testDeps) router() *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	alertService := alert.NewCreateAlertService(d.restrictions, d.attempts, d.resolver, d.alerts, d.store, testBucket, time.Second, testPendingDelivery)
+	alertService := alert.NewCreateAlertService(d.restrictions, d.attempts, d.resolver, d.sealer, d.alerts, d.store, testBucket, time.Second, testPendingDelivery)
 	attemptService := attempt.NewCreateAttemptService(d.restrictions, d.attempts, 10*time.Minute)
 	return NewRouter(
 		NewAlertHandler(alertService, testMaxPartBytes, retryAfterDePrueba),

@@ -12,8 +12,7 @@ import (
 //
 // IssuerID es nulo cuando el emisor dio de baja su cuenta: la alerta sigue
 // existiendo para sus dueños, pero ya no apunta a nadie, y los eventos que
-// salen de ella no llevan actor. La copia de retención del emisor vive aislada
-// en legal_hold.alert_holds.
+// salen de ella no llevan actor.
 type AlertModel struct {
 	ID             uuid.UUID  `gorm:"type:uuid;primaryKey;index:idx_alerts_created_at_id,priority:2,sort:desc"`
 	IssuerID       *uuid.UUID `gorm:"type:uuid;index"`
@@ -44,6 +43,12 @@ type AlertModel struct {
 	// casi todas las alertas los tienen en nulo.
 	PendingRef   *uuid.UUID `gorm:"column:pending_ref;type:uuid;index:idx_alerts_pending_ref,where:pending_ref IS NOT NULL"`
 	PendingUntil *time.Time `gorm:"column:pending_until;type:timestamptz"`
+
+	// AuditState es dónde está el registro de la alerta en el Audit Service:
+	// RECORDED desde la creación, y después DELIVERED o DISCARDED, una sola vez.
+	// Es nulo en las alertas anteriores al deploy de Audit, que no emiten ningún
+	// evento de Audit. Es interno: ninguna lectura lo selecciona.
+	AuditState *string `gorm:"column:audit_state;type:varchar(16)"`
 }
 
 // TableName fija el nombre de tabla explícito.

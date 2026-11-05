@@ -84,11 +84,15 @@ func DeriveVerdict(codes []ReasonCode) Verdict {
 	return verdict
 }
 
-// RedactedRef referencia una imagen redactada que IA subió al almacén.
+// RedactedRef referencia una imagen redactada que IA subió al almacén. SHA256 no
+// viene en el evento de IA: lo calcula Alert leyendo el objeto antes de aplicar
+// el veredicto (vacío si no se pudo calcular porque el objeto no existe), y es el
+// que audit.alert.delivered le entrega a Audit para verificar su copia.
 type RedactedRef struct {
-	Role  EvidenceRole
-	Index int
-	Key   string
+	Role   EvidenceRole
+	Index  int
+	Key    string
+	SHA256 string
 }
 
 // ValidationResult es el veredicto de IA sobre la evidencia de una alerta,
@@ -122,11 +126,14 @@ type VerdictRepository interface {
 	// imágenes redactadas, descarta las filas de los originales y encola
 	// alert.created (actor = emisor, ausente si la alerta ya no tiene emisor;
 	// owner_ids de sus destinatarios, que pueden ser ninguno: entonces owner_ids
-	// es []).
+	// es []). Si el registro de Audit de la alerta está RECORDED, en la misma
+	// transacción encola audit.alert.delivered (con destinatarios) o, sin ellos y
+	// sin una entrega pendiente vigente, audit.alert.discarded (UNCLAIMED).
 	Activate(ctx context.Context, result ValidationResult, now time.Time) (Resolution, error)
 	// Reject pasa la alerta a REJECTED, borra sus destinatarios y su evidencia,
 	// anula el resultado de la validación y encola alert.rejected (actor =
-	// emisor, ausente si la alerta ya no tiene emisor).
+	// emisor, ausente si la alerta ya no tiene emisor) y, si el registro de Audit está RECORDED,
+	// audit.alert.discarded (REJECTED).
 	Reject(ctx context.Context, result ValidationResult, now time.Time) (Resolution, error)
 	// OwnedRedactedKeys devuelve las claves REDACTED que alguna alerta ya
 	// registró para alertID. Permite distinguir los redactados huérfanos de

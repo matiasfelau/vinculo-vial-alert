@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"vinculo-vial-alert/internal/circuitbreaker"
+	"vinculo-vial-alert/internal/client/identity"
 	"vinculo-vial-alert/internal/client/storage"
 	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
@@ -82,6 +83,12 @@ func main() {
 		OpenDuration:     cfg.VehicleBreakerOpenDuration,
 	})
 	vehicleResolver := vehicle.NewBreakerResolver(vehicleClient, vehicleBreaker)
+	identityClient := identity.NewClient(cfg.IdentityInternalURL, cfg.IdentityTimeout, cfg.InternalServiceToken)
+	identityBreaker := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: cfg.IdentityBreakerFailureThreshold,
+		OpenDuration:     cfg.IdentityBreakerOpenDuration,
+	})
+	auditSealer := identity.NewBreakerSealer(identityClient, identityBreaker)
 	publisher := deliveryevents.NewPublisher(rabbitConn, cfg.RabbitMQExchange, cfg.RabbitMQPublishTimeout)
 
 	// El worker de outbox publica en background: CreateAlertService ya no
@@ -115,7 +122,7 @@ func main() {
 	// Los consumidores y el sweeper corren en background; los consumidores con
 	// su propia conexión y reconexión. Se detiene antes que el worker de outbox, para que un
 	// veredicto en proceso alcance a dejar su evento en el outbox.
-	verdictService := verdictsvc.NewApplyVerdictService(repopostgres.NewVerdictRepository(db), evidenceStore)
+	verdictService := verdictsvc.NewApplyVerdictService(repopostgres.NewVerdictRepository(db, cfg.EvidenceBucket), evidenceStore)
 	verdictStatus := &deliveryevents.ConnectionStatus{}
 	consumersCtx, stopConsumers := context.WithCancel(context.Background())
 	verdictDone := make(chan struct{})
@@ -142,7 +149,7 @@ func main() {
 			})
 	}()
 
-	pendingService := pendingsvc.NewDeliverService(repopostgres.NewPendingRepository(db))
+	pendingService := pendingsvc.NewDeliverService(repopostgres.NewPendingRepository(db, cfg.EvidenceBucket))
 	pendingClaimedStatus := &deliveryevents.ConnectionStatus{}
 	pendingClaimedDone := make(chan struct{})
 	go func() {
@@ -155,7 +162,7 @@ func main() {
 			})
 	}()
 
-	deletionService := deletionsvc.NewApplyDeletionService(repopostgres.NewUserDeletionRepository(db), cfg.LegalHoldRetention, cfg.AccessTokenTTL)
+	deletionService := deletionsvc.NewApplyDeletionService(repopostgres.NewUserDeletionRepository(db), cfg.AccessTokenTTL)
 	userDeletedStatus := &deliveryevents.ConnectionStatus{}
 	userDeletedDone := make(chan struct{})
 	go func() {
@@ -175,7 +182,7 @@ func main() {
 		sweeper.Run(consumersCtx, cfg.SweeperInterval)
 	}()
 
-	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery)
+	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery)
 	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo, cfg.EvidenceRetention)
 	ownerService := ownersvc.NewService(repopostgres.NewOwnerRepository(db), evidenceStore, cfg.EvidenceRetention)

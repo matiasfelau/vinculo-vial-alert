@@ -84,7 +84,7 @@ func TestSweeperRepository_ClearExpiredPending_EsIdempotente(t *testing.T) {
 func TestSweeperRepository_ClearExpiredPending_UnaVinculacionPosteriorYaNoEntregaLaAlertaAnulada(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	sweeper := NewSweeperRepository(db)
-	pending := NewPendingRepository(db)
+	pending := NewPendingRepository(db, bucketDePrueba)
 	ref, dueno := uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, ahoraPendiente.Add(time.Hour))
 

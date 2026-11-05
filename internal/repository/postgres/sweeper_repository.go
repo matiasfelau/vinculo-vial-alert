@@ -109,6 +109,9 @@ func (r *SweeperRepository) expireBatch(ctx context.Context, createdBefore, now 
 			if err := tx.Create(&outbox).Error; err != nil {
 				return err
 			}
+			if err := discardAudit(tx, alert.ID, domain.AuditDiscardExpired, now); err != nil {
+				return err
+			}
 			expired++
 		}
 		return nil
@@ -173,17 +176,6 @@ func (r *SweeperRepository) DeleteEvidenceRows(ctx context.Context, ids []uuid.U
 	return classifyDBError(r.db.WithContext(ctx).Where("id IN ?", ids).Delete(&AlertEvidenceModel{}).Error)
 }
 
-// DeleteExpiredHolds implementa domain.SweeperRepository. Un único DELETE
-// condicional sobre el índice de destroy_at: repetirlo o correrlo desde varias
-// réplicas no tiene efectos.
-func (r *SweeperRepository) DeleteExpiredHolds(ctx context.Context, now time.Time) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
-	defer cancel()
-
-	result := r.db.WithContext(ctx).Exec("DELETE FROM "+alertHoldsTable+" WHERE destroy_at <= ?", now.UTC())
-	return result.RowsAffected, classifyDBError(result.Error)
-}
-
 // DeleteExpiredDeletedRestrictions implementa domain.SweeperRepository. Solo
 // toca las restricciones DELETED vencidas: las de revisión no tienen vencimiento.
 func (r *SweeperRepository) DeleteExpiredDeletedRestrictions(ctx context.Context, now time.Time) (int64, error) {
@@ -196,16 +188,42 @@ func (r *SweeperRepository) DeleteExpiredDeletedRestrictions(ctx context.Context
 	return result.RowsAffected, classifyDBError(result.Error)
 }
 
-// ClearExpiredPending implementa domain.SweeperRepository. Un único UPDATE
-// condicional: solo toca las filas con la entrega vencida, así que repetirlo o
-// correrlo desde varias réplicas no tiene efectos. No cambia el estado ni los
-// destinatarios de la alerta.
+// clearExpiredPendingSQL anula la entrega vencida y devuelve las alertas que
+// tocó con el estado que tienen. Es un único UPDATE condicional: toma el lock de
+// cada fila, así que se serializa con una entrega al primer dueño (que también
+// actualiza la fila) y repetirlo o correrlo desde varias réplicas no tiene
+// efectos.
+const clearExpiredPendingSQL = `UPDATE alerts SET pending_ref = NULL, pending_until = NULL
+WHERE pending_until <= ?
+RETURNING id, status`
+
+// ClearExpiredPending implementa domain.SweeperRepository. No cambia el estado
+// ni los destinatarios de la alerta. Una alerta ACTIVE que llega acá sin
+// destinatarios ya no puede llegar a nadie: en la misma transacción su registro
+// de Audit pasa a DISCARDED (UNCLAIMED). Una alerta que sigue en validación se
+// resuelve cuando llega su veredicto, que ya no ve una entrega vigente.
 func (r *SweeperRepository) ClearExpiredPending(ctx context.Context, now time.Time) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
-	result := r.db.WithContext(ctx).Model(&AlertModel{}).
-		Where("pending_until <= ?", now).
-		Updates(map[string]any{"pending_ref": nil, "pending_until": nil})
-	return result.RowsAffected, classifyDBError(result.Error)
+	var cleared []claimedAlert
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		cleared = nil
+		if err := tx.Raw(clearExpiredPendingSQL, now).Scan(&cleared).Error; err != nil {
+			return err
+		}
+		for _, alert := range cleared {
+			if alert.Status != string(domain.AlertStatusActive) {
+				continue
+			}
+			if err := discardAudit(tx, alert.ID, domain.AuditDiscardUnclaimed, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, classifyDBError(err)
+	}
+	return int64(len(cleared)), nil
 }

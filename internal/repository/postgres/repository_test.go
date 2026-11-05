@@ -16,18 +16,6 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
-// adjuntarLegalHold adjunta una base en memoria con el nombre del esquema
-// legal_hold: SQLite no tiene esquemas, y las tablas calificadas
-// (legal_hold.alert_holds) viven en una base adjunta. Hay que llamarla antes de
-// AutoMigrate, con la conexión única del test.
-func adjuntarLegalHold(t *testing.T, db *gorm.DB) {
-	t.Helper()
-
-	if err := db.Exec("ATTACH DATABASE ':memory:' AS " + legalHoldSchema).Error; err != nil {
-		t.Fatalf("no se pudo adjuntar la base %s: %v", legalHoldSchema, err)
-	}
-}
-
 func nuevaDBDePrueba(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -47,7 +35,6 @@ func nuevaDBDePrueba(t *testing.T) *gorm.DB {
 	if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
 		t.Fatalf("no se pudo activar foreign_keys: %v", err)
 	}
-	adjuntarLegalHold(t, db)
 
 	if err := AutoMigrate(db); err != nil {
 		t.Fatalf("AutoMigrate falló: %v", err)
@@ -226,7 +213,7 @@ func TestAlertRepository_CreatePending_PersisteLaAlertaEnPendingValidation(t *te
 		t.Errorf("status = %q, requires_review = %v; se esperaba PENDING_VALIDATION y false", status, requiresReview)
 	}
 
-	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at", "pending_ref", "pending_until"}
+	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at", "pending_ref", "pending_until", "audit_state"}
 	if got := columnasDe(t, e.db, "alerts"); !reflect.DeepEqual(got, esperadas) {
 		t.Errorf("columnas de alerts = %v, se esperaban %v (la tabla no debe persistir pat_enc ni owner_ids)", got, esperadas)
 	}
@@ -514,3 +501,6 @@ func TestAlertEvidence_BorradoEnCascadaAlEliminarLaAlerta(t *testing.T) {
 		t.Errorf("la evidencia debía eliminarse en cascada, quedaron %d filas", restantes)
 	}
 }
+
+// bucketDePrueba es el bucket de la evidencia que viaja en audit.alert.delivered.
+const bucketDePrueba = "vinculo-vial-evidence-test"
