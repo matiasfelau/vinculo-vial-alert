@@ -40,7 +40,8 @@ type PendingRepository interface {
 	// con esa PendingRef, PendingUntil posterior a now, estado
 	// PENDING_VALIDATION o ACTIVE y un emisor distinto del dueño: crea el
 	// destinatario y anula PendingRef y PendingUntil. Si entregó al menos una
-	// ACTIVE, en la misma transacción encola un único alert.pending.delivered.
+	// ACTIVE, en la misma transacción encola un único alert.pending.delivered y,
+	// por cada una cuyo registro de Audit seguía RECORDED, audit.alert.delivered.
 	//
 	// Es idempotente: al anular la referencia, un reintento no encuentra nada
 	// que entregar, no crea destinatarios y no vuelve a encolar el evento.

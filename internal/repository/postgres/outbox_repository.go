@@ -94,7 +94,10 @@ func (r *OutboxRepository) FetchPending(ctx context.Context, limit int) ([]domai
 	return events, nil
 }
 
-// MarkSent registra que el evento se publicó y el broker lo confirmó.
+// MarkSent registra que el evento se publicó y el broker lo confirmó. Si es un
+// audit.alert.recorded, en el mismo UPDATE su payload pasa a '{}': lleva los
+// criptogramas del DNI del emisor y de la patente, y Alert no los guarda en
+// ninguna otra parte. Ningún otro evento cambia su payload.
 func (r *OutboxRepository) MarkSent(ctx context.Context, id uuid.UUID) error {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
@@ -105,6 +108,7 @@ func (r *OutboxRepository) MarkSent(ctx context.Context, id uuid.UUID) error {
 		Updates(map[string]any{
 			"status":  outboxStatusSent,
 			"sent_at": now,
+			"payload": gorm.Expr("CASE WHEN event_type = ? THEN '{}' ELSE payload END", domain.EventTypeAuditRecorded),
 		}).Error
 	return classifyDBError(err)
 }

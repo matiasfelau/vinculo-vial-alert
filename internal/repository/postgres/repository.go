@@ -32,7 +32,7 @@ func NewAlertRepository(db *gorm.DB) *AlertRepository {
 // El DELETE del intento es condicional (id, emisor y no vencido en now): si no
 // afecta ninguna fila, el intento venció o lo consumió otra solicitud, y la
 // transacción se revierte con domain.ErrAttemptExpired.
-func (r *AlertRepository) CreatePending(ctx context.Context, now time.Time, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID, evidence []domain.Evidence, outboxEvent domain.OutboxEvent) error {
+func (r *AlertRepository) CreatePending(ctx context.Context, now time.Time, alert *domain.AlertHistory, destinationOwnerIDs []uuid.UUID, evidence []domain.Evidence, outboxEvents ...domain.OutboxEvent) error {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
@@ -76,8 +76,13 @@ func (r *AlertRepository) CreatePending(ctx context.Context, now time.Time, aler
 			}
 		}
 
-		outboxModel := outboxEventToModel(&outboxEvent)
-		return tx.Create(&outboxModel).Error
+		for i := range outboxEvents {
+			outboxModel := outboxEventToModel(&outboxEvents[i])
+			if err := tx.Create(&outboxModel).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 
 	return classifyDBError(err)

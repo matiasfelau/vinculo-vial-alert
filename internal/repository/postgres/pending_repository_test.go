@@ -91,7 +91,7 @@ func totalDeEventos(t *testing.T, db *gorm.DB) int64 {
 
 func TestPendingRepository_Deliver_AlertaActiva_CreaElDestinatarioAnulaLaReferenciaYEncolaUnAviso(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, emisor, dueno := uuid.New(), uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, emisor, domain.AlertStatusActive, ref, vigente())
 
@@ -132,7 +132,7 @@ func TestPendingRepository_Deliver_AlertaEnValidacion_EntregaSinAviso(t *testing
 	// Lote solo PENDING_VALIDATION: no cuenta para el aviso. Su GREEN posterior
 	// le avisa al dueño por alert.created.
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, dueno := uuid.New(), uuid.New()
 	primera := alertaPendiente(t, db, uuid.New(), domain.AlertStatusPendingValidation, ref, vigente())
 	segunda := alertaPendiente(t, db, uuid.New(), domain.AlertStatusPendingValidation, ref, vigente())
@@ -160,7 +160,7 @@ func TestPendingRepository_Deliver_AlertaEnValidacion_EntregaSinAviso(t *testing
 
 func TestPendingRepository_Deliver_LoteMixto_UnSoloAvisoQueCuentaSoloLasActivas(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, dueno := uuid.New(), uuid.New()
 	activa1 := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, vigente())
 	activa2 := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, vigente())
@@ -198,7 +198,7 @@ func TestPendingRepository_Deliver_ClaimVencido_NoEntrega(t *testing.T) {
 	} {
 		t.Run(nombre, func(t *testing.T) {
 			db := nuevaDBDePrueba(t)
-			repo := NewPendingRepository(db)
+			repo := NewPendingRepository(db, bucketDePrueba)
 			ref, dueno := uuid.New(), uuid.New()
 			alertID := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, until)
 
@@ -225,7 +225,7 @@ func TestPendingRepository_Deliver_ClaimVencido_NoEntrega(t *testing.T) {
 
 func TestPendingRepository_Deliver_ClaimDelPropioEmisor_NoEntrega(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, emisor := uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, emisor, domain.AlertStatusActive, ref, vigente())
 
@@ -247,7 +247,7 @@ func TestPendingRepository_Deliver_ClaimDelPropioEmisor_NoEntrega(t *testing.T) 
 
 func TestPendingRepository_Deliver_LoteConAlertasDelDuenoYDeOtros_EntregaSoloLasAjenas(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, dueno := uuid.New(), uuid.New()
 	propia := alertaPendiente(t, db, dueno, domain.AlertStatusActive, ref, vigente())
 	ajena := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, vigente())
@@ -269,7 +269,7 @@ func TestPendingRepository_Deliver_RejectedYExpired_NuncaSeEntregan(t *testing.T
 	for _, status := range []domain.AlertStatus{domain.AlertStatusRejected, domain.AlertStatusExpired} {
 		t.Run(string(status), func(t *testing.T) {
 			db := nuevaDBDePrueba(t)
-			repo := NewPendingRepository(db)
+			repo := NewPendingRepository(db, bucketDePrueba)
 			ref, dueno := uuid.New(), uuid.New()
 			alertID := alertaPendiente(t, db, uuid.New(), status, ref, vigente())
 
@@ -294,7 +294,7 @@ func TestPendingRepository_Deliver_UnaAlertaRechazadaPorElVeredicto_NuncaSeEntre
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	delivery, err := NewPendingRepository(e.db).Deliver(context.Background(), domain.PendingClaim{PendingRef: ref, OwnerID: dueno}, e.now)
+	delivery, err := NewPendingRepository(e.db, bucketDePrueba).Deliver(context.Background(), domain.PendingClaim{PendingRef: ref, OwnerID: dueno}, e.now)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestPendingRepository_Deliver_UnaAlertaRechazadaPorElVeredicto_NuncaSeEntre
 
 func TestPendingRepository_Deliver_EsIdempotente_UnReintentoNoEntregaNiEncolaDeNuevo(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, dueno := uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, vigente())
 	claim := domain.PendingClaim{PendingRef: ref, OwnerID: dueno}
@@ -339,7 +339,7 @@ func TestPendingRepository_Deliver_EsIdempotente_UnReintentoNoEntregaNiEncolaDeN
 
 func TestPendingRepository_Deliver_ElPrimerDuenoGana_UnaSegundaVinculacionNoEntregaNada(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, primero, segundo := uuid.New(), uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, vigente())
 
@@ -361,7 +361,7 @@ func TestPendingRepository_Deliver_ElPrimerDuenoGana_UnaSegundaVinculacionNoEntr
 
 func TestPendingRepository_Deliver_OtraReferenciaOSinReferencia_NoSeToca(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, otraRef, dueno := uuid.New(), uuid.New(), uuid.New()
 	deOtraPatente := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, otraRef, vigente())
 	conDuenos := crearAlertaConEstado(t, db, uuid.New(), domain.AlertTypeCrashed, ahoraPendiente, domain.AlertStatusActive, uuid.New())
@@ -387,7 +387,7 @@ func TestPendingRepository_Deliver_ClaimAntesDelVeredicto_ElGreenPosteriorNotifi
 	dueno := uuid.New()
 	ctx := context.Background()
 
-	delivery, err := NewPendingRepository(e.db).Deliver(ctx, domain.PendingClaim{PendingRef: ref, OwnerID: dueno}, e.now)
+	delivery, err := NewPendingRepository(e.db, bucketDePrueba).Deliver(ctx, domain.PendingClaim{PendingRef: ref, OwnerID: dueno}, e.now)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestPendingRepository_Deliver_ClaimDespuesDelVeredicto_EncolaElAvisoYElAler
 	if _, err := verdicts.Activate(ctx, resultadoDe(e, domain.VerdictGreen), e.now); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
-	delivery, err := NewPendingRepository(e.db).Deliver(ctx, domain.PendingClaim{PendingRef: ref, OwnerID: dueno}, e.now)
+	delivery, err := NewPendingRepository(e.db, bucketDePrueba).Deliver(ctx, domain.PendingClaim{PendingRef: ref, OwnerID: dueno}, e.now)
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestPendingRepository_Deliver_ClaimDespuesDelVeredicto_EncolaElAvisoYElAler
 
 func TestPendingRepository_Deliver_ElDuenoNuevoVeLaAlertaActivaEnSuBuzon_PeroNoLaQueSigueEnValidacion(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, dueno := uuid.New(), uuid.New()
 	activa := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, vigente())
 	enValidacion := alertaPendiente(t, db, uuid.New(), domain.AlertStatusPendingValidation, ref, vigente())
@@ -470,7 +470,7 @@ func TestPendingRepository_Deliver_ElDuenoNuevoVeLaAlertaActivaEnSuBuzon_PeroNoL
 
 func TestPendingRepository_Deliver_ElVistoDelDuenoNuevoDisparaAlertSeenAlEmisor(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	pending := NewPendingRepository(db)
+	pending := NewPendingRepository(db, bucketDePrueba)
 	owners := NewOwnerRepository(db)
 	ref, emisor, dueno := uuid.New(), uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, emisor, domain.AlertStatusActive, ref, vigente())
@@ -513,7 +513,7 @@ func TestPendingRepository_Deliver_ElVistoDelDuenoNuevoDisparaAlertSeenAlEmisor(
 
 func TestPendingRepository_Deliver_EnviadosNoExponeNadaNuevoTrasLaEntrega(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	pending := NewPendingRepository(db)
+	pending := NewPendingRepository(db, bucketDePrueba)
 	sent := NewSentRepository(db)
 	ref, emisor, dueno := uuid.New(), uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, emisor, domain.AlertStatusActive, ref, vigente())
@@ -543,7 +543,7 @@ func TestPendingRepository_Deliver_EnviadosNoExponeNadaNuevoTrasLaEntrega(t *tes
 
 func TestPendingRepository_Deliver_EsAtomicaConElOutbox_SiFallaElAvisoNoQuedaEntregaParcial(t *testing.T) {
 	db := nuevaDBDePrueba(t)
-	repo := NewPendingRepository(db)
+	repo := NewPendingRepository(db, bucketDePrueba)
 	ref, dueno := uuid.New(), uuid.New()
 	alertID := alertaPendiente(t, db, uuid.New(), domain.AlertStatusActive, ref, vigente())
 	if err := db.Exec("DROP TABLE outbox_events").Error; err != nil {
@@ -564,7 +564,7 @@ func TestPendingRepository_Deliver_EsAtomicaConElOutbox_SiFallaElAvisoNoQuedaEnt
 }
 
 func TestPendingRepository_Deliver_ContextoVencido_ClasificaComoBaseNoDisponible(t *testing.T) {
-	repo := NewPendingRepository(nuevaDBDePrueba(t))
+	repo := NewPendingRepository(nuevaDBDePrueba(t), bucketDePrueba)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 

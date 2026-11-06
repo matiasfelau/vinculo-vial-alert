@@ -55,10 +55,15 @@ type resolveOwnerRequest struct {
 // resolveOwnerResponse es la respuesta de Vehicle. pat_enc_ia viene siempre,
 // también con owner_ids vacío. pending_ref viene solo cuando la patente no
 // tiene dueños; es un puntero para distinguir "ausente" de "vacío".
+// pat_enc_audit y audit_key_id también vienen siempre: la patente sellada hacia
+// Audit y el id de su clave. Este cliente no los exige, los entrega tal cual: el
+// caso de uso comprueba que estén, porque su ausencia es un 503 y no un 502.
 type resolveOwnerResponse struct {
-	OwnerIDs   []string `json:"owner_ids"`
-	PatEncIA   string   `json:"pat_enc_ia"`
-	PendingRef *string  `json:"pending_ref,omitempty"`
+	OwnerIDs    []string `json:"owner_ids"`
+	PatEncIA    string   `json:"pat_enc_ia"`
+	PendingRef  *string  `json:"pending_ref,omitempty"`
+	PatEncAudit string   `json:"pat_enc_audit,omitempty"`
+	AuditKeyID  string   `json:"audit_key_id,omitempty"`
 }
 
 // ResolveOwners implementa domain.OwnerResolver: reenvía pat_enc sin abrirlo
@@ -152,7 +157,13 @@ func (c *Client) ResolveOwners(ctx context.Context, patEnc string, alertID uuid.
 		return domain.ResolvedOwners{}, fmt.Errorf("vehicle resolver: %w: url=%s: pending_ref inválido", domain.ErrVehicleBadResponse, targetURL)
 	}
 
-	return domain.ResolvedOwners{OwnerIDs: ownerIDs, PatEncIA: parsed.PatEncIA, PendingRef: pendingRef}, nil
+	return domain.ResolvedOwners{
+		OwnerIDs:    ownerIDs,
+		PatEncIA:    parsed.PatEncIA,
+		PendingRef:  pendingRef,
+		PatEncAudit: parsed.PatEncAudit,
+		AuditKeyID:  parsed.AuditKeyID,
+	}, nil
 }
 
 // parsePendingRef traduce el pending_ref de la respuesta. Ausente es válido

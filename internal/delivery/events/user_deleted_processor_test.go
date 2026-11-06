@@ -54,8 +54,8 @@ func TestParseUserDeletion_Valido_ElUsuarioEsElActorYElInstanteViajaEnElPayload(
 	if deletion.UserID != user || !deletion.DeletedAt.Equal(want) {
 		t.Errorf("baja = %+v, se esperaba el usuario %v dado de baja en %v", deletion, user, want)
 	}
-	if !deletion.DestroyAt.IsZero() || !deletion.RestrictedUntil.IsZero() {
-		t.Error("los plazos los deriva el caso de uso: el parser no los completa")
+	if !deletion.RestrictedUntil.IsZero() {
+		t.Error("el plazo lo deriva el caso de uso: el parser no lo completa")
 	}
 }
 

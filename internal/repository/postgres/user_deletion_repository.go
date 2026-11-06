@@ -23,22 +23,15 @@ func NewUserDeletionRepository(db *gorm.DB) *UserDeletionRepository {
 	return &UserDeletionRepository{db: db}
 }
 
-// insertAlertHoldsSQL copia al esquema aislado cada alerta que emitió el
-// usuario. ON CONFLICT DO NOTHING hace idempotente la copia: un reintento no
-// duplica ni pisa el destroy_at original.
-const insertAlertHoldsSQL = `INSERT INTO ` + alertHoldsTable + ` (alert_id, issuer_id, alert_type, created_at, destroy_at)
-SELECT id, issuer_id, alert_type, created_at, ? FROM alerts WHERE issuer_id = ?
-ON CONFLICT (alert_id) DO NOTHING`
-
 // Apply implementa domain.UserDeletionRepository en una única transacción.
 //
 // Los intentos se borran primero a propósito. POST /alerts consume su intento
 // con un DELETE condicional dentro de la transacción que inserta la alerta; ese
 // DELETE y el de acá se serializan sobre la misma fila. Si la creación en vuelo
 // gana, la baja espera su commit y los pasos siguientes (que leen con READ
-// COMMITTED) ya ven la alerta nueva, así que la copian y la desvinculan. Si
-// gana la baja, la creación no encuentra el intento y responde 410. En ningún
-// orden queda una alerta con el emisor dado de baja.
+// COMMITTED) ya ven la alerta nueva y la desvinculan. Si gana la baja, la
+// creación no encuentra el intento y responde 410. En ningún orden queda una
+// alerta con el emisor dado de baja.
 func (r *UserDeletionRepository) Apply(ctx context.Context, deletion domain.UserDeletion) (domain.UserDeletionResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
@@ -70,12 +63,6 @@ func (r *UserDeletionRepository) Apply(ctx context.Context, deletion domain.User
 		if err != nil {
 			return err
 		}
-
-		holds := tx.Exec(insertAlertHoldsSQL, deletion.DestroyAt.UTC(), deletion.UserID)
-		if holds.Error != nil {
-			return holds.Error
-		}
-		result.Holds = holds.RowsAffected
 
 		detached := tx.Model(&AlertModel{}).
 			Where("issuer_id = ?", deletion.UserID).

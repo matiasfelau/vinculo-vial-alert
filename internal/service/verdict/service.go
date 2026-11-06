@@ -5,10 +5,16 @@ package verdict
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"vinculo-vial-alert/internal/domain"
 )
@@ -63,6 +69,12 @@ func (s *ApplyVerdictService) Execute(ctx context.Context, result domain.Validat
 }
 
 func (s *ApplyVerdictService) activate(ctx context.Context, result domain.ValidationResult) error {
+	redacted, err := s.hashRedacted(ctx, result.Redacted)
+	if err != nil {
+		return fmt.Errorf("verdict service: error al calcular el SHA-256 de las redactadas de %s: %w", result.AlertID, err)
+	}
+	result.Redacted = redacted
+
 	resolution, err := s.repo.Activate(ctx, result, s.now())
 	if err != nil {
 		return fmt.Errorf("verdict service: error al activar la alerta %s: %w", result.AlertID, err)
@@ -77,6 +89,57 @@ func (s *ApplyVerdictService) activate(ctx context.Context, result domain.Valida
 		return s.store.Delete(ctx, key)
 	})
 	return nil
+}
+
+// hashRedacted completa el SHA-256 de cada imagen redactada leyéndola del
+// almacén en streaming. IA no lo informa en el evento, y audit.alert.delivered
+// se lo entrega a Audit para que verifique la copia que guarda. Se calcula antes
+// de la transacción: nunca se lee el almacén con una transacción abierta.
+//
+// Un objeto que no existe no es un error: el SHA-256 queda vacío. Con un
+// veredicto duplicado o tardío no hace falta, y si hacía falta (la primera
+// activación de una alerta con registro en Audit) la transacción falla sola y el
+// mensaje se reintenta. Cualquier otro error es transitorio y se devuelve.
+func (s *ApplyVerdictService) hashRedacted(ctx context.Context, refs []domain.RedactedRef) ([]domain.RedactedRef, error) {
+	if len(refs) == 0 {
+		return refs, nil
+	}
+
+	hashed := append([]domain.RedactedRef(nil), refs...)
+	group, groupCtx := errgroup.WithContext(ctx)
+	for i := range hashed {
+		group.Go(func() error {
+			digest, err := s.sha256Of(groupCtx, hashed[i].Key)
+			if errors.Is(err, domain.ErrEvidenceNotFound) {
+				slog.Warn("verdict service: la imagen redactada no existe, se sigue sin su SHA-256", "key", hashed[i].Key)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			hashed[i].SHA256 = digest
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return hashed, nil
+}
+
+// sha256Of lee el objeto en streaming y devuelve su SHA-256 en hexadecimal.
+func (s *ApplyVerdictService) sha256Of(ctx context.Context, key string) (string, error) {
+	object, err := s.store.Get(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	defer object.Body.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, object.Body); err != nil {
+		return "", fmt.Errorf("%w: error al leer el objeto: %v", domain.ErrEvidenceUnavailable, err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (s *ApplyVerdictService) reject(ctx context.Context, result domain.ValidationResult) error {

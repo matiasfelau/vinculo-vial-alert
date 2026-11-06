@@ -24,7 +24,7 @@ func escenarioPendiente(t *testing.T) (*escenario, *VerdictRepository) {
 	if err := e.crear(); err != nil {
 		t.Fatalf("no se pudo crear la alerta pendiente: %v", err)
 	}
-	return e, NewVerdictRepository(e.db)
+	return e, NewVerdictRepository(e.db, bucketDePrueba)
 }
 
 func resultadoDe(e *escenario, verdict domain.Verdict, codes ...domain.ReasonCode) domain.ValidationResult {

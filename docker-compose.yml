@@ -12,6 +12,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://alert:alert@vinculo-vial-alert-db:5432/alert?sslmode=disable}
       VEHICLE_INTERNAL_URL: ${VEHICLE_INTERNAL_URL:-http://vinculo-vial-vehicle:8081}
       VEHICLE_TIMEOUT_MS: ${VEHICLE_TIMEOUT_MS:-2000}
+      IDENTITY_INTERNAL_URL: ${IDENTITY_INTERNAL_URL:-http://vinculo-vial-identity:8081}
+      IDENTITY_TIMEOUT_MS: ${IDENTITY_TIMEOUT_MS:-2000}
+      IDENTITY_BREAKER_FAILURE_THRESHOLD: ${IDENTITY_BREAKER_FAILURE_THRESHOLD:-5}
+      IDENTITY_BREAKER_OPEN_DURATION_MS: ${IDENTITY_BREAKER_OPEN_DURATION_MS:-30000}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?la variable INTERNAL_SERVICE_TOKEN es obligatoria en .env}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@vinculo-vial-rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-vvi.topic.exchange}
@@ -27,8 +31,7 @@ services:
       PENDING_TIMEOUT_MINUTES: ${PENDING_TIMEOUT_MINUTES:-1440}
       PENDING_DELIVERY_HOURS: ${PENDING_DELIVERY_HOURS:-24}
       SENT_RETENTION_DAYS: ${SENT_RETENTION_DAYS:-30}
-      # Compartidas con Identity: tienen que coincidir en los dos servicios.
-      LEGAL_HOLD_DAYS: ${LEGAL_HOLD_DAYS:-1095}
+      # Compartida con Identity: tiene que coincidir en los dos servicios.
       ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
       SWEEPER_INTERVAL_MS: ${SWEEPER_INTERVAL_MS:-60000}
       EVIDENCE_MAX_PART_BYTES: ${EVIDENCE_MAX_PART_BYTES:-1048576}

@@ -13,15 +13,17 @@ import (
 
 // PendingRepository implementa domain.PendingRepository sobre GORM/PostgreSQL.
 type PendingRepository struct {
-	db *gorm.DB
+	db     *gorm.DB
+	bucket string
 }
 
 var _ domain.PendingRepository = (*PendingRepository)(nil)
 
 // NewPendingRepository construye un PendingRepository a partir de una conexión
-// GORM ya establecida.
-func NewPendingRepository(db *gorm.DB) *PendingRepository {
-	return &PendingRepository{db: db}
+// GORM ya establecida. bucket es el de la evidencia (EVIDENCE_BUCKET): viaja en
+// audit.alert.delivered para que Audit sepa dónde leer las redactadas.
+func NewPendingRepository(db *gorm.DB, bucket string) *PendingRepository {
+	return &PendingRepository{db: db, bucket: bucket}
 }
 
 // claimedAlert es lo que devuelve el UPDATE que toma las alertas pendientes: el
@@ -78,8 +80,14 @@ func (r *PendingRepository) Deliver(ctx context.Context, claim domain.PendingCla
 				continue
 			}
 			delivery.Delivered++
-			if alert.Status == string(domain.AlertStatusActive) {
-				delivery.Active++
+			if alert.Status != string(domain.AlertStatusActive) {
+				// Sigue en validación: su registro de Audit pasa a DELIVERED cuando
+				// llega el veredicto y la alerta queda ACTIVE con este destinatario.
+				continue
+			}
+			delivery.Active++
+			if err := deliverAudit(tx, r.bucket, alert.ID, now); err != nil {
+				return err
 			}
 		}
 

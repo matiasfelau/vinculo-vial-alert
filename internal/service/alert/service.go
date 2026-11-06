@@ -9,6 +9,7 @@ package alert
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -52,6 +53,7 @@ type CreateAlertService struct {
 	restrictions    domain.RestrictionChecker
 	attempts        domain.AttemptRepository
 	resolver        domain.OwnerResolver
+	sealer          domain.AuditDNISealer
 	alerts          domain.AlertRepository
 	store           domain.EvidenceStore
 	bucket          string
@@ -60,17 +62,18 @@ type CreateAlertService struct {
 	now             func() time.Time
 }
 
-// NewCreateAlertService construye el caso de uso. resolver consulta a Vehicle
-// (con su timeout y su circuit breaker); bucket viaja en el evento para que IA
+// NewCreateAlertService construye el caso de uso. resolver consulta a Vehicle y
+// sealer a Identity (cada uno con su timeout y su circuit breaker); bucket viaja en el evento para que IA
 // sepa dónde leer; putBudget es el presupuesto total de los PUT concurrentes
 // (S3_PUT_TIMEOUT_MS); pendingDelivery es cuánto tiempo puede entregarse una
 // alerta de una patente sin dueños al primero que la vincule
 // (PENDING_DELIVERY_HOURS).
-func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts domain.AttemptRepository, resolver domain.OwnerResolver, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget, pendingDelivery time.Duration) *CreateAlertService {
+func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts domain.AttemptRepository, resolver domain.OwnerResolver, sealer domain.AuditDNISealer, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget, pendingDelivery time.Duration) *CreateAlertService {
 	return &CreateAlertService{
 		restrictions:    restrictions,
 		attempts:        attempts,
 		resolver:        resolver,
+		sealer:          sealer,
 		alerts:          alerts,
 		store:           store,
 		bucket:          bucket,
@@ -93,9 +96,12 @@ func (s *CreateAlertService) CheckIssuer(ctx context.Context, issuerID uuid.UUID
 }
 
 // Execute crea la alerta con su evidencia. El orden es deliberado: primero se
-// valida el intento y se consulta a Vehicle, y recién después se sube nada, así
-// que una falla de Vehicle o una respuesta sin pat_enc_ia corta antes de
-// escribir en el almacén o en la base. Errores de dominio que devuelve:
+// valida el intento y se consulta, en paralelo, a Vehicle y a Identity, y recién
+// después se sube nada, así que una falla de cualquiera de los dos, una
+// respuesta sin pat_enc_ia o sin los criptogramas de Audit corta antes de
+// escribir en el almacén o en la base. En la misma transacción de la alerta se
+// escriben sus dos eventos de outbox: alert.evidence.uploaded y
+// audit.alert.recorded. Errores de dominio que devuelve:
 //   - domain.ErrAttemptNotFound: el intento no existe o es de otro usuario.
 //   - domain.ErrAttemptExpired: el intento venció o lo consumió otra solicitud.
 //   - domain.ErrInvalidPlateCryptogram: Vehicle rechazó el criptograma o el
@@ -104,6 +110,14 @@ func (s *CreateAlertService) CheckIssuer(ctx context.Context, issuerID uuid.UUID
 //     circuito abierto.
 //   - domain.ErrVehicleBadResponse / domain.ErrVehicleRejected: Vehicle
 //     respondió 5xx, algo inválido (incluido un pat_enc_ia ausente) u otro 4xx.
+//   - domain.ErrAccountDeleted: Identity no conoce al emisor (404): dio de baja
+//     su cuenta.
+//   - domain.ErrIdentityUnavailable: Identity en timeout, inalcanzable o con el
+//     circuito abierto.
+//   - domain.ErrIdentityBadResponse / domain.ErrIdentityRejected: Identity
+//     respondió 5xx, algo inválido u otro 4xx.
+//   - domain.ErrAuditSealMissing: falta alguno de los dos criptogramas de Audit
+//     o las claves de Audit de Vehicle e Identity no coinciden.
 //   - domain.ErrEvidenceUnavailable: el almacén falló, expiró o tiene el
 //     circuito abierto; lo subido se borra (best effort).
 //   - domain.ErrDatabaseUnavailable: la base no responde; lo subido se borra.
@@ -122,7 +136,7 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	// agregado.
 	alertID := attempt.ID
 
-	resolved, err := s.resolver.ResolveOwners(ctx, input.PatEnc, alertID)
+	resolved, sealed, err := s.resolveAndSeal(ctx, input.IssuerID, input.PatEnc, alertID)
 	if err != nil {
 		return CreateAlertResult{}, err
 	}
@@ -132,6 +146,14 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	if resolved.PatEncIA == "" {
 		slog.Error("create alert service: Vehicle respondió sin pat_enc_ia", "alert_id", alertID)
 		return CreateAlertResult{}, fmt.Errorf("create alert service: %w: la respuesta no trae pat_enc_ia", domain.ErrVehicleBadResponse)
+	}
+	// Ninguna alerta se crea sin su registro de Audit: sin los dos criptogramas, o
+	// con claves distintas, el registro no se podría abrir nunca. Es fail-closed y
+	// corta antes de subir la evidencia.
+	if !auditSealsValid(resolved, sealed) {
+		// Ni el log ni el error llevan valores: son criptogramas del DNI y la patente.
+		slog.Error("create alert service: falta el criptograma de auditoría o las claves de Audit no coinciden", "alert_id", alertID)
+		return CreateAlertResult{}, fmt.Errorf("create alert service: %w", domain.ErrAuditSealMissing)
 	}
 	recipients := recipientsOf(resolved.OwnerIDs, input.IssuerID)
 	pendingRef, pendingUntil := s.pendingOf(resolved, now)
@@ -146,6 +168,17 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	}, now)
 	if err != nil {
 		return CreateAlertResult{}, fmt.Errorf("create alert service: error al construir alert.evidence.uploaded: %w", err)
+	}
+	recorded, err := domain.NewAuditRecordedEvent(uuid.New(), domain.AuditRecordedPayload{
+		AlertID:     alertID,
+		AlertType:   input.AlertType,
+		CreatedAt:   now,
+		DNIEncAudit: sealed.DNIEncAudit,
+		PatEncAudit: resolved.PatEncAudit,
+		AuditKeyID:  sealed.AuditKeyID,
+	}, now)
+	if err != nil {
+		return CreateAlertResult{}, fmt.Errorf("create alert service: error al construir audit.alert.recorded: %w", err)
 	}
 
 	if err := s.uploadOriginals(ctx, evidence, input.Files); err != nil {
@@ -169,8 +202,9 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 		CreatedAt:    now,
 		PendingRef:   pendingRef,
 		PendingUntil: pendingUntil,
+		AuditState:   domain.AuditStateRecorded,
 	}
-	if err := s.alerts.CreatePending(ctx, now, alertRow, recipients, evidence, event); err != nil {
+	if err := s.alerts.CreatePending(ctx, now, alertRow, recipients, evidence, event, recorded); err != nil {
 		s.cleanupAfterFailedCreate(ctx, alertID, evidence, err)
 		if errors.Is(err, domain.ErrAttemptExpired) {
 			return CreateAlertResult{}, domain.ErrAttemptExpired
@@ -179,6 +213,63 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 	}
 
 	return CreateAlertResult{AlertID: alertID, Status: domain.AlertStatusPendingValidation}, nil
+}
+
+// resolveAndSeal consulta en paralelo a Vehicle (dueños y patente) y a Identity
+// (el DNI del emisor sellado para Audit). Las dos llamadas tienen su propio
+// timeout y su propio circuit breaker, así que el máximo es el del más lento y no
+// la suma. Ninguna cancela a la otra: un contexto cancelado se contaría como
+// falla del breaker de una dependencia que no falló.
+//
+// Si fallan las dos gana el error de Vehicle, que es el que ya existía. Un 404
+// de Identity es una cuenta dada de baja (domain.ErrAccountDeleted).
+func (s *CreateAlertService) resolveAndSeal(ctx context.Context, issuerID uuid.UUID, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, domain.SealedDNI, error) {
+	var (
+		resolved   domain.ResolvedOwners
+		resolveErr error
+		sealed     domain.SealedDNI
+		sealErr    error
+		wg         sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		resolved, resolveErr = s.resolver.ResolveOwners(ctx, patEnc, alertID)
+	}()
+	go func() {
+		defer wg.Done()
+		sealed, sealErr = s.sealer.SealDNI(ctx, issuerID, alertID)
+	}()
+	wg.Wait()
+
+	if resolveErr != nil {
+		return domain.ResolvedOwners{}, domain.SealedDNI{}, resolveErr
+	}
+	if errors.Is(sealErr, domain.ErrIdentityUserNotFound) {
+		return domain.ResolvedOwners{}, domain.SealedDNI{}, domain.ErrAccountDeleted
+	}
+	if sealErr != nil {
+		return domain.ResolvedOwners{}, domain.SealedDNI{}, sealErr
+	}
+	return resolved, sealed, nil
+}
+
+// auditSealsValid indica si Vehicle e Identity entregaron los dos criptogramas de
+// Audit, en base64, y con el mismo id de clave. Alert no los abre: solo comprueba
+// la forma para no transportar basura hasta un registro que nadie podría abrir.
+func auditSealsValid(resolved domain.ResolvedOwners, sealed domain.SealedDNI) bool {
+	if resolved.AuditKeyID == "" || resolved.AuditKeyID != sealed.AuditKeyID {
+		return false
+	}
+	for _, seal := range []string{sealed.DNIEncAudit, resolved.PatEncAudit} {
+		if seal == "" {
+			return false
+		}
+		if _, err := base64.StdEncoding.DecodeString(seal); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // recipientsOf descarta al emisor de los dueños que devolvió Vehicle (nunca se

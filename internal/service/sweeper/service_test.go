@@ -49,11 +49,6 @@ type mockRepo struct {
 	sentCutoff  time.Time
 	sentCalled  bool
 
-	holdsDeleted int64
-	holdsErr     error
-	holdsNow     time.Time
-	holdsCalled  bool
-
 	restrictionsDeleted int64
 	restrictionsErr     error
 	restrictionsNow     time.Time
@@ -84,12 +79,6 @@ func (m *mockRepo) ClearExpiredPending(_ context.Context, now time.Time) (int64,
 	m.pendingCalled = true
 	m.pendingNow = now
 	return m.pendingCleared, m.pendingErr
-}
-
-func (m *mockRepo) DeleteExpiredHolds(_ context.Context, now time.Time) (int64, error) {
-	m.holdsCalled = true
-	m.holdsNow = now
-	return m.holdsDeleted, m.holdsErr
 }
 
 func (m *mockRepo) DeleteExpiredDeletedRestrictions(_ context.Context, now time.Time) (int64, error) {
