@@ -42,6 +42,11 @@ var ErrPatEncIAMissing = errors.New("falta pat_enc_ia para pedir la validación 
 // (issuer_restrictions) y no puede crear alertas. El handler lo mapea a 403.
 var ErrIssuerUnderReview = errors.New("el emisor está en revisión")
 
+// ErrAccountDeleted indica que el usuario dio de baja su cuenta y la
+// restricción DELETED todavía no venció: su access token sigue siendo válido,
+// pero ya no puede crear alertas. El handler lo mapea a 403.
+var ErrAccountDeleted = errors.New("la cuenta fue dada de baja")
+
 // ErrAttemptNotFound indica que el intento no existe o pertenece a otro
 // usuario; no se distingue. El handler lo mapea a 404.
 var ErrAttemptNotFound = errors.New("el intento no existe")

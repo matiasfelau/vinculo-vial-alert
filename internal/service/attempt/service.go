@@ -39,23 +39,26 @@ func NewCreateAttemptService(restrictions domain.RestrictionChecker, attempts do
 	}
 }
 
-// Execute valida que el emisor no esté en revisión, genera el id del intento y
-// lo guarda. El id es el futuro alert_id: es el info del HPKE con el que la app
-// cifra las fotos hacia IA.
+// Execute valida que el emisor no esté en revisión ni haya dado de baja su
+// cuenta, genera el id del intento y lo guarda. El id es el futuro alert_id: es
+// el info del HPKE con el que la app cifra las fotos hacia IA.
 //
 // Errores de dominio que devuelve:
 //   - domain.ErrIssuerUnderReview: el emisor está en revisión.
+//   - domain.ErrAccountDeleted: el emisor dio de baja su cuenta y la
+//     restricción todavía no venció.
 //   - domain.ErrDatabaseUnavailable: la base no responde.
 func (s *CreateAttemptService) Execute(ctx context.Context, input CreateAttemptInput) (domain.Attempt, error) {
-	underReview, err := s.restrictions.IsUnderReview(ctx, input.IssuerID)
+	now := s.now()
+
+	status, err := s.restrictions.StatusOf(ctx, input.IssuerID, now)
 	if err != nil {
 		return domain.Attempt{}, fmt.Errorf("create attempt service: error al consultar la restricción del emisor: %w", err)
 	}
-	if underReview {
-		return domain.Attempt{}, domain.ErrIssuerUnderReview
+	if err := status.AlertCreationError(); err != nil {
+		return domain.Attempt{}, err
 	}
 
-	now := s.now()
 	attempt := domain.Attempt{
 		ID:        uuid.New(),
 		IssuerID:  input.IssuerID,

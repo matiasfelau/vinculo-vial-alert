@@ -4,9 +4,10 @@ import "vinculo-vial-alert/internal/domain"
 
 // toModel convierte la entidad de dominio a su representación persistente.
 func toModel(alert *domain.AlertHistory) AlertModel {
-	return AlertModel{
+	issuerID := alert.IssuerID
+	model := AlertModel{
 		ID:        alert.ID,
-		IssuerID:  alert.IssuerID,
+		IssuerID:  &issuerID,
 		AlertType: string(alert.AlertType),
 		Status:    string(alert.Status),
 		CreatedAt: alert.CreatedAt,
@@ -14,6 +15,11 @@ func toModel(alert *domain.AlertHistory) AlertModel {
 		PendingRef:   alert.PendingRef,
 		PendingUntil: alert.PendingUntil,
 	}
+	if alert.AuditState != "" {
+		state := string(alert.AuditState)
+		model.AuditState = &state
+	}
+	return model
 }
 
 // evidenceToModel convierte un registro de evidencia a su fila. El SHA-256

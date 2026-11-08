@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"vinculo-vial-alert/internal/circuitbreaker"
+	"vinculo-vial-alert/internal/client/identity"
 	"vinculo-vial-alert/internal/client/storage"
 	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
@@ -20,9 +21,11 @@ import (
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
 	attemptsvc "vinculo-vial-alert/internal/service/attempt"
+	deletionsvc "vinculo-vial-alert/internal/service/deletion"
 	inboxsvc "vinculo-vial-alert/internal/service/inbox"
 	outboxsvc "vinculo-vial-alert/internal/service/outbox"
 	ownersvc "vinculo-vial-alert/internal/service/owner"
+	pendingsvc "vinculo-vial-alert/internal/service/pending"
 	restrictionsvc "vinculo-vial-alert/internal/service/restriction"
 	sentsvc "vinculo-vial-alert/internal/service/sent"
 	sweepersvc "vinculo-vial-alert/internal/service/sweeper"
@@ -80,6 +83,12 @@ func main() {
 		OpenDuration:     cfg.VehicleBreakerOpenDuration,
 	})
 	vehicleResolver := vehicle.NewBreakerResolver(vehicleClient, vehicleBreaker)
+	identityClient := identity.NewClient(cfg.IdentityInternalURL, cfg.IdentityTimeout, cfg.InternalServiceToken)
+	identityBreaker := circuitbreaker.New(circuitbreaker.Config{
+		FailureThreshold: cfg.IdentityBreakerFailureThreshold,
+		OpenDuration:     cfg.IdentityBreakerOpenDuration,
+	})
+	auditSealer := identity.NewBreakerSealer(identityClient, identityBreaker)
 	publisher := deliveryevents.NewPublisher(rabbitConn, cfg.RabbitMQExchange, cfg.RabbitMQPublishTimeout)
 
 	// El worker de outbox publica en background: CreateAlertService ya no
@@ -113,7 +122,7 @@ func main() {
 	// Los consumidores y el sweeper corren en background; los consumidores con
 	// su propia conexión y reconexión. Se detiene antes que el worker de outbox, para que un
 	// veredicto en proceso alcance a dejar su evento en el outbox.
-	verdictService := verdictsvc.NewApplyVerdictService(repopostgres.NewVerdictRepository(db), evidenceStore)
+	verdictService := verdictsvc.NewApplyVerdictService(repopostgres.NewVerdictRepository(db, cfg.EvidenceBucket), evidenceStore)
 	verdictStatus := &deliveryevents.ConnectionStatus{}
 	consumersCtx, stopConsumers := context.WithCancel(context.Background())
 	verdictDone := make(chan struct{})
@@ -140,6 +149,32 @@ func main() {
 			})
 	}()
 
+	pendingService := pendingsvc.NewDeliverService(repopostgres.NewPendingRepository(db, cfg.EvidenceBucket))
+	pendingClaimedStatus := &deliveryevents.ConnectionStatus{}
+	pendingClaimedDone := make(chan struct{})
+	go func() {
+		defer close(pendingClaimedDone)
+		deliveryevents.RunWithReconnect(consumersCtx, cfg.RabbitMQURL, cfg.PendingClaimedQueue, cfg.RabbitMQPrefetch, pendingClaimedStatus,
+			func(channel deliveryevents.ConsumerChannel) *deliveryevents.Consumer {
+				deadLetters := deliveryevents.NewAMQPDeadLetterPublisher(channel, cfg.RabbitMQPublishTimeout)
+				handler := deliveryevents.NewMessageHandler(deliveryevents.NewPendingClaimedProcessor(pendingService), deadLetters, cfg.PendingClaimedQueue, cfg.MaxRetries)
+				return deliveryevents.NewConsumer(channel, cfg.PendingClaimedQueue, handler)
+			})
+	}()
+
+	deletionService := deletionsvc.NewApplyDeletionService(repopostgres.NewUserDeletionRepository(db), cfg.AccessTokenTTL)
+	userDeletedStatus := &deliveryevents.ConnectionStatus{}
+	userDeletedDone := make(chan struct{})
+	go func() {
+		defer close(userDeletedDone)
+		deliveryevents.RunWithReconnect(consumersCtx, cfg.RabbitMQURL, cfg.UserDeletedQueue, cfg.RabbitMQPrefetch, userDeletedStatus,
+			func(channel deliveryevents.ConsumerChannel) *deliveryevents.Consumer {
+				deadLetters := deliveryevents.NewAMQPDeadLetterPublisher(channel, cfg.RabbitMQPublishTimeout)
+				handler := deliveryevents.NewMessageHandler(deliveryevents.NewUserDeletedProcessor(deletionService), deadLetters, cfg.UserDeletedQueue, cfg.MaxRetries)
+				return deliveryevents.NewConsumer(channel, cfg.UserDeletedQueue, handler)
+			})
+	}()
+
 	sweeper := sweepersvc.New(repopostgres.NewSweeperRepository(db), evidenceStore, evidenceStore.Healthy, cfg.PendingTimeout, cfg.EvidenceRetention, cfg.SentRetention)
 	sweeperDone := make(chan struct{})
 	go func() {
@@ -147,7 +182,7 @@ func main() {
 		sweeper.Run(consumersCtx, cfg.SweeperInterval)
 	}()
 
-	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery)
+	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery)
 	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo, cfg.EvidenceRetention)
 	ownerService := ownersvc.NewService(repopostgres.NewOwnerRepository(db), evidenceStore, cfg.EvidenceRetention)
@@ -162,6 +197,8 @@ func main() {
 		deliveryhttp.DependencyCheck{Name: "s3", Healthy: evidenceStore.Healthy},
 		deliveryhttp.DependencyCheck{Name: "verdict_consumer", Healthy: verdictStatus.Connected},
 		deliveryhttp.DependencyCheck{Name: "user_status_consumer", Healthy: userStatusStatus.Connected},
+		deliveryhttp.DependencyCheck{Name: "pending_claimed_consumer", Healthy: pendingClaimedStatus.Connected},
+		deliveryhttp.DependencyCheck{Name: "user_deleted_consumer", Healthy: userDeletedStatus.Connected},
 	)
 	readyHandler := deliveryhttp.NewReadyHandler(sqlDB)
 	router := deliveryhttp.NewRouter(alertHandler, attemptHandler, ownerHandler, inboxHandler, sentHandler, healthHandler, readyHandler, depsHandler)
@@ -207,6 +244,18 @@ func main() {
 	case <-userStatusDone:
 	case <-ctx.Done():
 		log.Println("el consumidor de estados de usuario no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
+	}
+
+	select {
+	case <-pendingClaimedDone:
+	case <-ctx.Done():
+		log.Println("el consumidor de vinculaciones pendientes no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
+	}
+
+	select {
+	case <-userDeletedDone:
+	case <-ctx.Done():
+		log.Println("el consumidor de bajas de usuario no terminó a tiempo; el mensaje en vuelo se reentrega al reiniciar")
 	}
 
 	select {

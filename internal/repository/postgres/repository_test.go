@@ -213,7 +213,7 @@ func TestAlertRepository_CreatePending_PersisteLaAlertaEnPendingValidation(t *te
 		t.Errorf("status = %q, requires_review = %v; se esperaba PENDING_VALIDATION y false", status, requiresReview)
 	}
 
-	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at", "pending_ref", "pending_until"}
+	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at", "pending_ref", "pending_until", "audit_state"}
 	if got := columnasDe(t, e.db, "alerts"); !reflect.DeepEqual(got, esperadas) {
 		t.Errorf("columnas de alerts = %v, se esperaban %v (la tabla no debe persistir pat_enc ni owner_ids)", got, esperadas)
 	}
@@ -427,9 +427,10 @@ func TestAlertEvidenceModel_ColumnasExactasYSinBinarios(t *testing.T) {
 func insertarAlerta(t *testing.T, db *gorm.DB) AlertModel {
 	t.Helper()
 
+	issuerID := uuid.New()
 	alert := AlertModel{
 		ID:        uuid.New(),
-		IssuerID:  uuid.New(),
+		IssuerID:  &issuerID,
 		AlertType: string(domain.AlertTypeCrashed),
 		Status:    string(domain.AlertStatusActive),
 		CreatedAt: time.Now().UTC(),
@@ -500,3 +501,6 @@ func TestAlertEvidence_BorradoEnCascadaAlEliminarLaAlerta(t *testing.T) {
 		t.Errorf("la evidencia debía eliminarse en cascada, quedaron %d filas", restantes)
 	}
 }
+
+// bucketDePrueba es el bucket de la evidencia que viaja en audit.alert.delivered.
+const bucketDePrueba = "vinculo-vial-evidence-test"

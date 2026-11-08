@@ -19,6 +19,11 @@ const tokenDePrueba = "token-secreto-de-prueba"
 
 const patEncIADePrueba = "Y3JpcHRvZ3JhbWEtaWEtZGUtcHJ1ZWJh" // base64 de un texto cualquiera
 
+const (
+	patEncAuditDePrueba = "Y3JpcHRvZ3JhbWEtYXVkaXQ="
+	auditKeyIDDePrueba  = "clave-audit-1"
+)
+
 func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 	ownerA := uuid.New()
 	ownerB := uuid.New()
@@ -45,7 +50,7 @@ func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resolveOwnerResponse{OwnerIDs: []string{ownerA.String(), ownerB.String()}, PatEncIA: patEncIADePrueba})
+		_ = json.NewEncoder(w).Encode(resolveOwnerResponse{OwnerIDs: []string{ownerA.String(), ownerB.String()}, PatEncIA: patEncIADePrueba, PatEncAudit: patEncAuditDePrueba, AuditKeyID: auditKeyIDDePrueba})
 	}))
 	defer server.Close()
 
@@ -60,6 +65,9 @@ func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 	}
 	if resolved.PatEncIA != patEncIADePrueba {
 		t.Errorf("pat_enc_ia = %q, se esperaba el criptograma de Vehicle tal cual", resolved.PatEncIA)
+	}
+	if resolved.PatEncAudit != patEncAuditDePrueba || resolved.AuditKeyID != auditKeyIDDePrueba {
+		t.Errorf("pat_enc_audit = %q y audit_key_id = %q, se esperaba lo que devolvió Vehicle tal cual", resolved.PatEncAudit, resolved.AuditKeyID)
 	}
 }
 
@@ -204,5 +212,22 @@ func TestClient_ResolveOwners_LogsNoIncluyenElCriptograma(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "CRIPTOGRAMA-SECRETO") {
 		t.Errorf("el error incluye el criptograma: %v", err)
+	}
+}
+
+func TestClient_ResolveOwners_SinCamposDeAudit_LosEntregaVaciosParaQueElCasoDeUsoLosRechace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resolveOwnerResponse{OwnerIDs: []string{}, PatEncIA: patEncIADePrueba})
+	}))
+	defer server.Close()
+
+	resolved, err := NewClient(server.URL, time.Second, tokenDePrueba).ResolveOwners(context.Background(), "x", uuid.New())
+
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if resolved.PatEncAudit != "" || resolved.AuditKeyID != "" {
+		t.Errorf("resolved = %+v, no se inventa nada que Vehicle no devolvió", resolved)
 	}
 }

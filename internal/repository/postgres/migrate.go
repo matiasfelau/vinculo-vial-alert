@@ -15,6 +15,13 @@ const (
 	attemptsTable       = "alert_attempts"
 	outboxTable         = "outbox_events"
 	outboxBackfillBatch = 500
+
+	// legalHoldSchema es el esquema de los registros de retención de las bajas de
+	// cuenta que US-11 creó en este servicio. El Audit Service lo reemplazó: la
+	// migración lo borra.
+	legalHoldSchema = "legal_hold"
+
+	postgresDialect = "postgres"
 )
 
 // newOutboxColumns son las columnas del outbox genérico, agregadas nullable
@@ -32,9 +39,13 @@ var legacyOutboxColumns = []string{"issuer_id", "alert_type", "owner_ids"}
 
 // AutoMigrate crea o actualiza el esquema de las tablas alerts,
 // alert_destinations, alert_evidence, outbox_events, alert_attempts,
-// issuer_restrictions, alert_feedback y alert_reports. Antes de eso convierte el outbox del
-// esquema viejo al genérico (ver migrateLegacyOutbox). AlertModel se migra
-// primero: AlertDestinationModel depende de su FK.
+// issuer_restrictions, alert_feedback y alert_reports. Antes de eso convierte el
+// outbox del esquema viejo al genérico (ver migrateLegacyOutbox) y al final
+// retira el esquema legal_hold (ver dropLegalHold). AlertModel se migra primero:
+// AlertDestinationModel depende de su FK. Que alerts.issuer_id acepte nulos lo
+// resuelve el propio AutoMigrate: relaja un NOT NULL existente y nunca endurece
+// una columna; lo mismo vale para la columna nueva alerts.audit_state, que
+// nace nula.
 func AutoMigrate(db *gorm.DB) error {
 	if err := migrateLegacyOutbox(db); err != nil {
 		return fmt.Errorf("migración del outbox genérico: %w", err)
@@ -45,7 +56,24 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := migrateAttemptsWithoutResolution(db); err != nil {
 		return fmt.Errorf("migración del intento sin resolución: %w", err)
 	}
-	return db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &AlertEvidenceModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{}, &AlertFeedbackModel{}, &AlertReportModel{})
+	if err := db.AutoMigrate(&AlertModel{}, &AlertDestinationModel{}, &AlertEvidenceModel{}, &OutboxEventModel{}, &AttemptModel{}, &RestrictionModel{}, &AlertFeedbackModel{}, &AlertReportModel{}); err != nil {
+		return err
+	}
+	if err := dropLegalHold(db); err != nil {
+		return fmt.Errorf("retiro del esquema legal_hold: %w", err)
+	}
+	return nil
+}
+
+// dropLegalHold borra el esquema legal_hold, con alert_holds adentro, que US-11
+// creó antes de que el Audit Service tomara el registro de retención. Es
+// idempotente: sin el esquema no hace nada. SQLite no tiene esquemas, y nunca
+// los tuvo fuera de las pruebas, así que ahí no hay nada que borrar.
+func dropLegalHold(db *gorm.DB) error {
+	if db.Dialector.Name() != postgresDialect {
+		return nil
+	}
+	return db.Exec("DROP SCHEMA IF EXISTS " + legalHoldSchema + " CASCADE").Error
 }
 
 // legacyAttemptColumns son las columnas del intento con resolución de dueños

@@ -15,10 +15,17 @@ import (
 //
 // PendingRef es la referencia de la patente pendiente: Vehicle la devuelve solo
 // cuando la patente no tiene dueños. Es nil si Vehicle no la informó.
+//
+// PatEncAudit es la misma patente canónica sellada por Vehicle hacia la clave
+// pública de Audit (HPKE, info = "vv-audit:pat:" + alert_id) y AuditKeyID el id
+// de esa clave. Vehicle los devuelve siempre, con o sin dueños. Alert los
+// transporta hasta el outbox sin poder abrirlos; el caso de uso exige que estén.
 type ResolvedOwners struct {
-	OwnerIDs   []uuid.UUID
-	PatEncIA   string
-	PendingRef *uuid.UUID
+	OwnerIDs    []uuid.UUID
+	PatEncIA    string
+	PendingRef  *uuid.UUID
+	PatEncAudit string
+	AuditKeyID  string
 }
 
 // OwnerResolver resuelve los dueños de un vehículo a partir de su patente

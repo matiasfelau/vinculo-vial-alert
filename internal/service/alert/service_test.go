@@ -25,17 +25,30 @@ const (
 	patEncDePrueba = "criptograma-hpke-hacia-vehicle"
 
 	patEncIATest = "Y3JpcHRvZ3JhbWEtaWE="
+
+	patEncAuditTest = "Y3JpcHRvZ3JhbWEtYXVkaXQtcGF0ZW50ZQ=="
+	dniEncAuditTest = "Y3JpcHRvZ3JhbWEtYXVkaXQtZG5p"
+	auditKeyIDTest  = "clave-audit-1"
 )
 
 var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
+// mockRestrictions devuelve el estado configurado: underReview es un atajo para
+// UNDER_REVIEW y status cubre el resto (por ejemplo DELETED).
 type mockRestrictions struct {
 	underReview bool
+	status      domain.AccountStatus
 	err         error
 }
 
-func (m *mockRestrictions) IsUnderReview(context.Context, uuid.UUID) (bool, error) {
-	return m.underReview, m.err
+func (m *mockRestrictions) StatusOf(context.Context, uuid.UUID, time.Time) (domain.AccountStatus, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	if m.underReview {
+		return domain.AccountStatusUnderReview, nil
+	}
+	return m.status, nil
 }
 
 type mockAttempts struct {
@@ -67,11 +80,12 @@ type mockAlerts struct {
 	owners      []uuid.UUID
 	evidence    []domain.Evidence
 	event       domain.OutboxEvent
+	events      []domain.OutboxEvent
 	existsCalls int
 	onCreate    func()
 }
 
-func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, event domain.OutboxEvent) error {
+func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, events ...domain.OutboxEvent) error {
 	if m.onCreate != nil {
 		m.onCreate()
 	}
@@ -85,7 +99,7 @@ func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain
 	}
 	m.consumed = true
 	m.created++
-	m.alert, m.owners, m.evidence, m.event = alert, owners, evidence, event
+	m.alert, m.owners, m.evidence, m.event, m.events = alert, owners, evidence, events[0], events
 	return nil
 }
 
@@ -168,6 +182,7 @@ type fixture struct {
 	attempt  *domain.Attempt
 	attempts *mockAttempts
 	resolver *mockResolver
+	sealer   *mockSealer
 	alerts   *mockAlerts
 	store    *mockStore
 	svc      *CreateAlertService
@@ -188,10 +203,11 @@ func nuevoFixture(t *testing.T) *fixture {
 		attempt:  attempt,
 		attempts: &mockAttempts{attempt: attempt},
 		resolver: &mockResolver{resolved: domain.ResolvedOwners{OwnerIDs: []uuid.UUID{uuid.New(), uuid.New()}, PatEncIA: patEncIATest}},
+		sealer:   &mockSealer{},
 		alerts:   &mockAlerts{},
 		store:    newMockStore(),
 	}
-	f.svc = NewCreateAlertService(&mockRestrictions{}, f.attempts, f.resolver, f.alerts, f.store, testBucket, testPutBudget, testPendingDelivery)
+	f.svc = NewCreateAlertService(&mockRestrictions{}, f.attempts, f.resolver, f.sealer, f.alerts, f.store, testBucket, testPutBudget, testPendingDelivery)
 	f.svc.now = func() time.Time { return ahora }
 	return f
 }
@@ -223,11 +239,12 @@ func TestCheckIssuer(t *testing.T) {
 	}{
 		"emisor activo":                        {&mockRestrictions{}, nil},
 		"emisor en revisión":                   {&mockRestrictions{underReview: true}, domain.ErrIssuerUnderReview},
+		"cuenta dada de baja":                  {&mockRestrictions{status: domain.AccountStatusDeleted}, domain.ErrAccountDeleted},
 		"no se puede consultar: falla cerrado": {&mockRestrictions{err: domain.ErrDatabaseUnavailable}, domain.ErrDatabaseUnavailable},
 	}
 	for nombre, caso := range casos {
 		t.Run(nombre, func(t *testing.T) {
-			svc := NewCreateAlertService(caso.restrictions, &mockAttempts{}, &mockResolver{}, &mockAlerts{}, newMockStore(), testBucket, testPutBudget, testPendingDelivery)
+			svc := NewCreateAlertService(caso.restrictions, &mockAttempts{}, &mockResolver{}, &mockSealer{}, &mockAlerts{}, newMockStore(), testBucket, testPutBudget, testPendingDelivery)
 
 			err := svc.CheckIssuer(context.Background(), uuid.New())
 

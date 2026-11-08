@@ -21,12 +21,29 @@ type mockResolver struct {
 	calls    int
 	patEnc   string
 	alertID  uuid.UUID
+	// sinAuditoria devuelve la respuesta tal cual está en resolved. Por defecto el
+	// doble completa pat_enc_audit y audit_key_id, que Vehicle devuelve siempre.
+	sinAuditoria bool
+	// onCall se ejecuta al recibir cada llamada, antes de responder.
+	onCall func()
 }
 
 func (m *mockResolver) ResolveOwners(_ context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
 	m.calls++
 	m.patEnc, m.alertID = patEnc, alertID
-	return m.resolved, m.err
+	if m.onCall != nil {
+		m.onCall()
+	}
+	resolved := m.resolved
+	if !m.sinAuditoria {
+		if resolved.PatEncAudit == "" {
+			resolved.PatEncAudit = patEncAuditTest
+		}
+		if resolved.AuditKeyID == "" {
+			resolved.AuditKeyID = auditKeyIDTest
+		}
+	}
+	return resolved, m.err
 }
 
 func (f *fixture) sinNadaPersistido(t *testing.T) {

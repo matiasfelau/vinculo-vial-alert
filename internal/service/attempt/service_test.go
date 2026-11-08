@@ -11,13 +11,22 @@ import (
 	"vinculo-vial-alert/internal/domain"
 )
 
+// mockRestrictions devuelve el estado configurado: underReview es un atajo para
+// UNDER_REVIEW y status cubre el resto (por ejemplo DELETED).
 type mockRestrictions struct {
 	underReview bool
+	status      domain.AccountStatus
 	err         error
 }
 
-func (m *mockRestrictions) IsUnderReview(context.Context, uuid.UUID) (bool, error) {
-	return m.underReview, m.err
+func (m *mockRestrictions) StatusOf(context.Context, uuid.UUID, time.Time) (domain.AccountStatus, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	if m.underReview {
+		return domain.AccountStatusUnderReview, nil
+	}
+	return m.status, nil
 }
 
 type mockAttempts struct {
@@ -120,5 +129,19 @@ func TestExecute_ErrorAlGuardar_SePropaga(t *testing.T) {
 
 	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba ErrDatabaseUnavailable", err)
+	}
+}
+
+func TestExecute_CuentaDadaDeBaja_RechazaSinGuardarNada(t *testing.T) {
+	attempts := &mockAttempts{}
+	svc := nuevoServicio(&mockRestrictions{status: domain.AccountStatusDeleted}, attempts)
+
+	_, err := svc.Execute(context.Background(), CreateAttemptInput{IssuerID: uuid.New()})
+
+	if !errors.Is(err, domain.ErrAccountDeleted) {
+		t.Fatalf("error = %v, se esperaba ErrAccountDeleted", err)
+	}
+	if len(attempts.saved) != 0 {
+		t.Error("una cuenta dada de baja no debe guardar un intento")
 	}
 }

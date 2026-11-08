@@ -16,7 +16,9 @@ type mockRepo struct {
 	err      error
 }
 
-func (m *mockRepo) IsUnderReview(context.Context, uuid.UUID) (bool, error) { return false, nil }
+func (m *mockRepo) StatusOf(context.Context, uuid.UUID, time.Time) (domain.AccountStatus, error) {
+	return domain.AccountStatusActive, nil
+}
 
 func (m *mockRepo) Upsert(_ context.Context, restriction domain.Restriction) error {
 	if m.err != nil {

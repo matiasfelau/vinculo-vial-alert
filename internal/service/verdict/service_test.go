@@ -1,8 +1,10 @@
 package verdict
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"sort"
 	"sync"
 	"testing"
@@ -49,12 +51,32 @@ type mockStore struct {
 	tagged    map[string]domain.EvidenceStatus
 	deleteErr error
 	tagErr    error
+
+	// objects es el contenido por clave. Una clave que no está sirve el contenido
+	// por defecto, salvo que figure en missing (no existe) o haya getErr.
+	objects map[string][]byte
+	missing map[string]bool
+	getErr  error
+	gets    []string
 }
 
 func (m *mockStore) Put(context.Context, string, []byte, domain.EvidenceStatus) error { return nil }
 
-func (m *mockStore) Get(context.Context, string) (domain.EvidenceObject, error) {
-	return domain.EvidenceObject{}, errors.New("no usado")
+func (m *mockStore) Get(_ context.Context, key string) (domain.EvidenceObject, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gets = append(m.gets, key)
+	if m.getErr != nil {
+		return domain.EvidenceObject{}, m.getErr
+	}
+	if m.missing[key] {
+		return domain.EvidenceObject{}, domain.ErrEvidenceNotFound
+	}
+	body, ok := m.objects[key]
+	if !ok {
+		body = []byte("contenido-redactado:" + key)
+	}
+	return domain.EvidenceObject{Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))}, nil
 }
 
 func (m *mockStore) Delete(ctx context.Context, key string) error {

@@ -14,22 +14,25 @@ import (
 
 // VerdictRepository implementa domain.VerdictRepository sobre GORM/PostgreSQL.
 type VerdictRepository struct {
-	db *gorm.DB
+	db     *gorm.DB
+	bucket string
 }
 
 var _ domain.VerdictRepository = (*VerdictRepository)(nil)
 
 // NewVerdictRepository construye un VerdictRepository a partir de una
-// conexión GORM ya establecida.
-func NewVerdictRepository(db *gorm.DB) *VerdictRepository {
-	return &VerdictRepository{db: db}
+// conexión GORM ya establecida. bucket es el de la evidencia (EVIDENCE_BUCKET):
+// viaja en audit.alert.delivered para que Audit sepa dónde leer las redactadas.
+func NewVerdictRepository(db *gorm.DB, bucket string) *VerdictRepository {
+	return &VerdictRepository{db: db, bucket: bucket}
 }
 
 // alertSummary es lo que hace falta leer de una alerta para armar sus
-// eventos.
+// eventos. IssuerID es nil si el emisor dio de baja su cuenta: sus eventos
+// salen sin actor.
 type alertSummary struct {
-	IssuerID  uuid.UUID `gorm:"column:issuer_id"`
-	AlertType string    `gorm:"column:alert_type"`
+	IssuerID  *uuid.UUID `gorm:"column:issuer_id"`
+	AlertType string     `gorm:"column:alert_type"`
 }
 
 // Activate implementa domain.VerdictRepository para GREEN y YELLOW.
@@ -81,6 +84,10 @@ func (r *VerdictRepository) Activate(ctx context.Context, result domain.Validati
 					S3Key:     ref.Key,
 					CreatedAt: now,
 				}
+				if ref.SHA256 != "" {
+					digest := ref.SHA256
+					rows[i].SHA256 = &digest
+				}
 			}
 			if err := tx.Create(&rows).Error; err != nil {
 				return err
@@ -106,12 +113,33 @@ func (r *VerdictRepository) Activate(ctx context.Context, result domain.Validati
 			return fmt.Errorf("error al construir alert.created: %w", err)
 		}
 		outbox := outboxEventToModel(&event)
-		return tx.Create(&outbox).Error
+		if err := tx.Create(&outbox).Error; err != nil {
+			return err
+		}
+		return r.recordAuditOutcome(tx, result.AlertID, len(owners) > 0, now)
 	})
 	if err != nil {
 		return domain.Resolution{}, classifyDBError(err)
 	}
 	return resolution, nil
+}
+
+// recordAuditOutcome le dice a Audit qué pasó con la alerta que acaba de quedar
+// ACTIVE. Con destinatarios, la alerta ya llegó a alguien: delivered. Sin
+// ellos, si todavía puede entregarse a un dueño futuro (pending_ref con
+// pending_until vigente) no pasa nada: el registro sigue RECORDED hasta que
+// alguien la reciba o venza la entrega; si ya no puede, discarded UNCLAIMED. Las
+// dos salidas son condicionales sobre RECORDED, así que una alerta anterior al
+// deploy de Audit no emite nada.
+func (r *VerdictRepository) recordAuditOutcome(tx *gorm.DB, alertID uuid.UUID, hasRecipients bool, now time.Time) error {
+	if hasRecipients {
+		return deliverAudit(tx, r.bucket, alertID, now)
+	}
+	live, err := hasLivePending(tx, alertID, now)
+	if err != nil || live {
+		return err
+	}
+	return discardAudit(tx, alertID, domain.AuditDiscardUnclaimed, now)
 }
 
 // Reject implementa domain.VerdictRepository para RED.
@@ -166,6 +194,9 @@ func (r *VerdictRepository) Reject(ctx context.Context, result domain.Validation
 		}
 		outbox := outboxEventToModel(&event)
 		if err := tx.Create(&outbox).Error; err != nil {
+			return err
+		}
+		if err := discardAudit(tx, result.AlertID, domain.AuditDiscardRejected, now); err != nil {
 			return err
 		}
 		resolution = domain.Resolution{Applied: true, OriginalKeys: originalKeys}

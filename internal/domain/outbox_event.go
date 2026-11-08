@@ -45,8 +45,9 @@ type AlertCreatedPayload struct {
 }
 
 // NewAlertCreatedEvent construye el evento de outbox alert.created. El
-// emisor va en Actor, nunca en el payload.
-func NewAlertCreatedEvent(id, issuerID, alertID uuid.UUID, alertType AlertType, ownerIDs []uuid.UUID, createdAt time.Time) (OutboxEvent, error) {
+// emisor va en Actor, nunca en el payload; si la alerta ya no tiene emisor
+// (issuerID nil, porque dio de baja su cuenta) el evento sale sin actor.
+func NewAlertCreatedEvent(id uuid.UUID, issuerID *uuid.UUID, alertID uuid.UUID, alertType AlertType, ownerIDs []uuid.UUID, createdAt time.Time) (OutboxEvent, error) {
 	if ownerIDs == nil {
 		ownerIDs = []uuid.UUID{}
 	}
@@ -57,7 +58,7 @@ func NewAlertCreatedEvent(id, issuerID, alertID uuid.UUID, alertType AlertType, 
 	return OutboxEvent{
 		ID:        id,
 		EventType: EventTypeAlertCreated,
-		Actor:     &issuerID,
+		Actor:     issuerID,
 		Payload:   payload,
 		CreatedAt: createdAt,
 	}, nil
@@ -71,8 +72,8 @@ type AlertExpiredPayload struct {
 }
 
 // NewAlertExpiredEvent construye el evento de outbox alert.expired. El emisor
-// va en Actor, nunca en el payload.
-func NewAlertExpiredEvent(id, issuerID, alertID uuid.UUID, alertType AlertType, createdAt time.Time) (OutboxEvent, error) {
+// va en Actor, nunca en el payload; sin emisor (issuerID nil) sale sin actor.
+func NewAlertExpiredEvent(id uuid.UUID, issuerID *uuid.UUID, alertID uuid.UUID, alertType AlertType, createdAt time.Time) (OutboxEvent, error) {
 	payload, err := json.Marshal(AlertExpiredPayload{AlertID: alertID, AlertType: alertType})
 	if err != nil {
 		return OutboxEvent{}, err
@@ -80,7 +81,7 @@ func NewAlertExpiredEvent(id, issuerID, alertID uuid.UUID, alertType AlertType, 
 	return OutboxEvent{
 		ID:        id,
 		EventType: EventTypeAlertExpired,
-		Actor:     &issuerID,
+		Actor:     issuerID,
 		Payload:   payload,
 		CreatedAt: createdAt,
 	}, nil
