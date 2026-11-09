@@ -15,7 +15,7 @@ la alerta no depende de que el broker esté disponible en ese momento.
 
 ## Requisitos
 
-- Go 1.25 o superior
+- Go 1.26 o superior
 - Docker y Docker Compose
 - PostgreSQL (provisto por `docker-compose.yml` para desarrollo local)
 - RabbitMQ accesible con el exchange `vvi.topic.exchange` declarado
@@ -70,6 +70,63 @@ go test ./...
 CGO_ENABLED=0 go build -o alert ./cmd/api
 docker compose up --build
 ```
+
+## CI
+
+El workflow `.github/workflows/ci.yml` corre en todo `pull_request` hacia `dev` o `main`
+(y en `push` a `dev`). Tiene tres jobs:
+
+| Job | Qué hace | ¿Corta? |
+|---|---|---|
+| `build-test` | gofmt, build, vet, pruebas con cobertura y gate sobre el código nuevo | Sí |
+| `security` | Trivy `fs` y `govulncheck` | Sí |
+| `semgrep` | `semgrep scan --config p/default` | No (informativo; pasa a gate en v0.14) |
+
+Las acciones de terceros están fijadas por SHA de commit (la versión va en un comentario) y el
+workflow declara `permissions: contents: read`. Dependabot actualiza semanalmente `gomod`,
+`github-actions` y `docker`.
+
+### Cobertura
+
+- **Gate sobre el código nuevo:** `diff-cover` exige 85 % o más de las líneas que el PR agrega o
+  cambia respecto de `origin/<base>`.
+- **Cobertura total:** se publica en el resumen del job y como artefacto `coverage`
+  (`coverage.out`, `coverage.xml`, `coverage-func.txt`), sin cortar. En v0.14, cuando todos los
+  repos estén en 85 % o más, el gate pasa a ser sobre el total.
+- **Pruebas incluidas:** todo `go test ./...`. El repo no tiene pruebas de integración en CI: la
+  etiqueta `aws` (`internal/client/storage`) es opt-in y pega contra el bucket real de desarrollo,
+  así que no corre ahí. Si aparece una etiqueta `integration`, se corre con su propio perfil y se
+  une con `gocovmerge` antes de convertir.
+- **Exclusiones:** ninguna. Todo el código del repo es escrito a mano, y `cmd/api` cuenta como
+  cobertura 0 % en el total.
+
+### Correr en local
+
+```
+# Cobertura (perfil, resumen y Cobertura XML)
+go test ./... -count=1 -covermode=atomic -coverpkg=./... -coverprofile=coverage.out
+go tool cover -func=coverage.out | tail -n 1
+go install github.com/boumenot/gocover-cobertura@v1.5.0
+gocover-cobertura < coverage.out > coverage.xml
+
+# Gate sobre el código nuevo (con los cambios commiteados y origin/dev actualizado)
+pip install diff-cover==11.0.1
+diff-cover coverage.xml --compare-branch=origin/dev --fail-under=85
+
+# Seguridad
+go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+govulncheck ./...
+trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
+  --exit-code 1 --ignorefile .trivyignore .
+
+# Semgrep (informativo)
+pip install semgrep==1.184.0
+semgrep scan --config p/default
+```
+
+Trivy local también lee el `.env` (está en `.gitignore`, así que el CI no lo ve): para reproducir el
+CI, escanear un checkout limpio. Las excepciones de Trivy van solo en `.trivyignore`, cada una con un
+comentario que diga por qué y hasta cuándo.
 
 ## Arquitectura
 
