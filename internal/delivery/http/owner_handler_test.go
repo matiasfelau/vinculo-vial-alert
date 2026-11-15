@@ -138,8 +138,10 @@ func TestGetEvidence_RolOIndiceMalformados_Devuelven404SinConsultarNada(t *testi
 		rutaEvidencia(alertID, "general", "0"), // el rol va en mayúsculas, como en el buzón
 		rutaEvidencia(alertID, "SELFIE", "0"),
 		rutaEvidencia(alertID, "GENERAL", "1"), // GENERAL admite solo el índice 0
-		rutaEvidencia(alertID, "DETAIL", "3"),  // DETAIL admite 0 a 2
-		rutaEvidencia(alertID, "DETAIL", "-1"),
+		rutaEvidencia(alertID, "PLATE", "1"),   // PLATE admite solo el índice 0
+		rutaEvidencia(alertID, "PLATE", "-1"),
+		rutaEvidencia(alertID, "DETAIL", "0"), // los roles DETAIL y CONTEXT ya no existen (US-15)
+		rutaEvidencia(alertID, "CONTEXT", "0"),
 		rutaEvidencia(alertID, "GENERAL", "uno"),
 		rutaEvidencia(alertID, "GENERAL", "0%00"),
 	}

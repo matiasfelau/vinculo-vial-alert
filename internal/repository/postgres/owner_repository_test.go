@@ -101,7 +101,7 @@ func TestOwnerRepository_FindEvidence_TodoLoQueNoEstaAutorizado_EsNotFoundSinDis
 			return uuid.New(), a.owner, domain.EvidenceRoleGeneral, 0
 		},
 		"rol sin imagen": func(a *alertaDelDueno) (uuid.UUID, uuid.UUID, domain.EvidenceRole, int) {
-			return a.alertID, a.owner, domain.EvidenceRoleContext, 0
+			return a.alertID, a.owner, domain.EvidenceRole("CONTEXT"), 0
 		},
 		"índice sin imagen": func(a *alertaDelDueno) (uuid.UUID, uuid.UUID, domain.EvidenceRole, int) {
 			return a.alertID, a.owner, domain.EvidenceRoleGeneral, 1

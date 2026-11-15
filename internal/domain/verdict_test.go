@@ -93,9 +93,9 @@ func TestNewAlertRejectedEvent_ReasonCodesNuncaEsNull(t *testing.T) {
 func TestRedactedEvidenceKey(t *testing.T) {
 	alertID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 
-	got := RedactedEvidenceKey(alertID, EvidenceRoleDetail, 1)
+	got := RedactedEvidenceKey(alertID, EvidenceRolePlate, 0)
 
-	if want := "alerts/22222222-2222-2222-2222-222222222222/redacted/detail-1.jpg"; got != want {
+	if want := "alerts/22222222-2222-2222-2222-222222222222/redacted/plate-0.jpg"; got != want {
 		t.Errorf("clave = %q, se esperaba %q", got, want)
 	}
 }

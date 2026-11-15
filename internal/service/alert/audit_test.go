@@ -297,7 +297,7 @@ func TestExecute_FallaElOutboxDeAudit_NoQuedaAlertaYSeBorraLoSubido(t *testing.T
 	if f.alerts.created != 0 {
 		t.Error("no debía crearse la alerta")
 	}
-	if len(f.store.deletedKeys()) != 4 {
-		t.Errorf("borrados = %d, se esperaban los 4 originales subidos", len(f.store.deletedKeys()))
+	if len(f.store.deletedKeys()) != 2 {
+		t.Errorf("borrados = %d, se esperaban los 2 originales subidos", len(f.store.deletedKeys()))
 	}
 }

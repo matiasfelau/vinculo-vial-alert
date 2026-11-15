@@ -44,8 +44,6 @@ func fotosChoque() []parteDePrueba {
 	return []parteDePrueba{
 		{"general", cifrado(100)},
 		{"plate", cifrado(100)},
-		{"detail", cifrado(100)},
-		{"detail", cifrado(100)},
 	}
 }
 
@@ -53,7 +51,6 @@ func fotosGaraje() []parteDePrueba {
 	return []parteDePrueba{
 		{"general", cifrado(100)},
 		{"plate", cifrado(100)},
-		{"context", cifrado(100)},
 	}
 }
 
@@ -148,11 +145,11 @@ func TestCreateAlert_Choque_Devuelve202YCreaLaAlertaPendiente(t *testing.T) {
 	if body.AlertID != attemptID.String() || body.Status != "PENDING_VALIDATION" {
 		t.Errorf("body = %+v, se esperaba alert_id = attempt_id y PENDING_VALIDATION", body)
 	}
-	if len(deps.alerts.created) != 1 || len(deps.alerts.evidence) != 4 {
+	if len(deps.alerts.created) != 1 || len(deps.alerts.evidence) != 2 {
 		t.Errorf("alertas = %d, evidencia = %d", len(deps.alerts.created), len(deps.alerts.evidence))
 	}
-	if len(deps.store.objects) != 4 {
-		t.Errorf("objetos en el almacén = %d, se esperaban 4", len(deps.store.objects))
+	if len(deps.store.objects) != 2 {
+		t.Errorf("objetos en el almacén = %d, se esperaban 2", len(deps.store.objects))
 	}
 }
 
@@ -165,8 +162,8 @@ func TestCreateAlert_Garaje_Devuelve202(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, se esperaba 202 (%s)", rec.Code, rec.Body.String())
 	}
-	if len(deps.store.objects) != 3 {
-		t.Errorf("objetos en el almacén = %d, se esperaban 3", len(deps.store.objects))
+	if len(deps.store.objects) != 2 {
+		t.Errorf("objetos en el almacén = %d, se esperaban 2", len(deps.store.objects))
 	}
 }
 
@@ -174,7 +171,7 @@ func TestCreateAlert_UnaParteExactamenteEnElLimite_Devuelve202(t *testing.T) {
 	issuerID := uuid.New()
 	deps, attemptID := depsConIntento(t, issuerID)
 	partes := []parteDePrueba{metadata(attemptID, "PARKED_ON_GARAGE"),
-		{"general", cifrado(testMaxPartBytes)}, {"plate", cifrado(100)}, {"context", cifrado(100)}}
+		{"general", cifrado(testMaxPartBytes)}, {"plate", cifrado(100)}}
 
 	rec := servir(deps, nuevoPost(t, issuerID.String(), partes...))
 
@@ -251,21 +248,26 @@ func TestCreateAlert_EvidenciaInvalida_Devuelve400INVALID_EVIDENCE(t *testing.T)
 	issuerID := uuid.New()
 	attemptID := uuid.New()
 	casos := map[string][]parteDePrueba{
-		"sin metadata":                 fotosChoque(),
-		"metadata no es la primera":    append(fotosChoque()[:1:1], append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()[1:]...)...),
-		"metadata con JSON inválido":   append([]parteDePrueba{{"metadata", []byte(`{no es json`)}}, fotosChoque()...),
-		"attempt_id no es UUID":        append([]parteDePrueba{{"metadata", []byte(`{"attempt_id":"abc","alert_type":"CRASHED"}`)}}, fotosChoque()...),
-		"metadata duplicada":           append([]parteDePrueba{metadata(attemptID, "CRASHED"), metadata(attemptID, "CRASHED")}, fotosChoque()...),
-		"falta la foto de la patente":  {metadata(attemptID, "CRASHED"), {"general", cifrado(100)}, {"detail", cifrado(100)}},
-		"falta el detalle del daño":    {metadata(attemptID, "CRASHED"), {"general", cifrado(100)}, {"plate", cifrado(100)}},
-		"sobran fotos de detalle (4)":  append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"detail", cifrado(100)}, parteDePrueba{"detail", cifrado(100)}),
-		"dos fotos generales":          append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"general", cifrado(100)}),
-		"context en un choque":         append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"context", cifrado(100)}),
-		"detail en un garaje":          append(append([]parteDePrueba{metadata(attemptID, "PARKED_ON_GARAGE")}, fotosGaraje()...), parteDePrueba{"detail", cifrado(100)}),
-		"falta el contexto del garaje": {metadata(attemptID, "PARKED_ON_GARAGE"), {"general", cifrado(100)}, {"plate", cifrado(100)}},
-		"parte desconocida":            append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"selfie", cifrado(100)}),
-		"ciphertext demasiado corto":   {metadata(attemptID, "CRASHED"), {"general", cifrado(10)}, {"plate", cifrado(100)}, {"detail", cifrado(100)}},
-		"sin ninguna foto":             {metadata(attemptID, "CRASHED")},
+		"sin metadata":                    fotosChoque(),
+		"metadata no es la primera":       append(fotosChoque()[:1:1], append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()[1:]...)...),
+		"metadata con JSON inválido":      append([]parteDePrueba{{"metadata", []byte(`{no es json`)}}, fotosChoque()...),
+		"attempt_id no es UUID":           append([]parteDePrueba{{"metadata", []byte(`{"attempt_id":"abc","alert_type":"CRASHED"}`)}}, fotosChoque()...),
+		"metadata duplicada":              append([]parteDePrueba{metadata(attemptID, "CRASHED"), metadata(attemptID, "CRASHED")}, fotosChoque()...),
+		"falta la foto de la patente":     {metadata(attemptID, "CRASHED"), {"general", cifrado(100)}},
+		"falta la foto del auto":          {metadata(attemptID, "CRASHED"), {"plate", cifrado(100)}},
+		"garaje sin la foto del auto":     {metadata(attemptID, "PARKED_ON_GARAGE"), {"plate", cifrado(100)}},
+		"garaje sin la de la patente":     {metadata(attemptID, "PARKED_ON_GARAGE"), {"general", cifrado(100)}},
+		"dos fotos generales":             append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"general", cifrado(100)}),
+		"dos fotos de patente":            append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"plate", cifrado(100)}),
+		"detail en un choque (3 partes)":  append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"detail", cifrado(100)}),
+		"context en un choque (3 partes)": append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"context", cifrado(100)}),
+		"detail en un garaje (3 partes)":  append(append([]parteDePrueba{metadata(attemptID, "PARKED_ON_GARAGE")}, fotosGaraje()...), parteDePrueba{"detail", cifrado(100)}),
+		"context en un garaje (3 partes)": append(append([]parteDePrueba{metadata(attemptID, "PARKED_ON_GARAGE")}, fotosGaraje()...), parteDePrueba{"context", cifrado(100)}),
+		"detail en lugar de plate":        {metadata(attemptID, "CRASHED"), {"general", cifrado(100)}, {"detail", cifrado(100)}},
+		"context en lugar de plate":       {metadata(attemptID, "PARKED_ON_GARAGE"), {"general", cifrado(100)}, {"context", cifrado(100)}},
+		"parte desconocida":               append(append([]parteDePrueba{metadata(attemptID, "CRASHED")}, fotosChoque()...), parteDePrueba{"selfie", cifrado(100)}),
+		"ciphertext demasiado corto":      {metadata(attemptID, "CRASHED"), {"general", cifrado(10)}, {"plate", cifrado(100)}},
+		"sin ninguna foto":                {metadata(attemptID, "CRASHED")},
 	}
 	for nombre, partes := range casos {
 		t.Run(nombre, func(t *testing.T) {
@@ -290,7 +292,7 @@ func TestCreateAlert_UnaParteMasGrandeQueElLimite_Devuelve413(t *testing.T) {
 	issuerID := uuid.New()
 	deps, attemptID := depsConIntento(t, issuerID)
 	partes := []parteDePrueba{metadata(attemptID, "CRASHED"),
-		{"general", cifrado(testMaxPartBytes + 1)}, {"plate", cifrado(100)}, {"detail", cifrado(100)}}
+		{"general", cifrado(testMaxPartBytes + 1)}, {"plate", cifrado(100)}}
 
 	rec := servir(deps, nuevoPost(t, issuerID.String(), partes...))
 
@@ -416,7 +418,7 @@ func TestCreateAlert_CarreraConElMismoIntento_Uno202YOtro410SinBorrarLaEvidencia
 	if primera != http.StatusAccepted || segunda != http.StatusGone {
 		t.Fatalf("estados = %d y %d, se esperaba 202 y 410", primera, segunda)
 	}
-	if len(deps.store.objects) != 4 {
+	if len(deps.store.objects) != 2 {
 		t.Errorf("objetos en el almacén = %d: la solicitud perdedora no debe borrar la evidencia de la ganadora", len(deps.store.objects))
 	}
 }

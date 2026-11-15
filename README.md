@@ -133,6 +133,26 @@ lo reenvía a Vehicle sin abrirlo ni guardarlo. El orden es deliberado:
    `alert.evidence.uploaded` y de `audit.alert.recorded`;
 5. `202 { alert_id, status: PENDING_VALIDATION }`, idéntico en todos los casos.
 
+**Evidencia (US-15).** Todo tipo de alerta (`CRASHED` y `PARKED_ON_GARAGE`) lleva
+exactamente dos fotos, cada una en su parte del multipart, cifrada en la app
+contra la clave de IA (Alert nunca la ve en claro):
+
+| Parte | Foto | Cantidad |
+|---|---|---|
+| `metadata` | `{ attempt_id, alert_type, pat_enc }`, siempre la primera | 1 |
+| `general` | el auto | 1 |
+| `plate` | la patente | 1 |
+
+Máximo de fotos por alerta: 2 (el tamaño total del body se acota con ese número y
+`EVIDENCE_MAX_PART_BYTES` por foto). No hay compatibilidad con la app anterior:
+las partes `detail` y `context` ya no existen y se rechazan igual que cualquier
+parte desconocida, con `400 INVALID_EVIDENCE`, igual que una foto de más o de
+menos, sin subir nada a S3. El buzón (Recibidos y Enviados) lista las imágenes
+redactadas en ese orden: `GENERAL` y `PLATE`; `GET /api/v1/alerts/{id}/evidence/{role}/{index}`
+admite solo `GENERAL/0` y `PLATE/0`, y un evento de IA con una imagen redactada de otro
+rol o índice se descarta como payload inválido. Los datos no se migran: en
+desarrollo, recreá las bases con `docker compose down -v`.
+
 Vehicle devuelve `pat_enc_ia` siempre, también cuando la patente no tiene
 dueños, porque IA lo necesita para validar. Si falta o no es base64, el cliente
 lo trata como respuesta inválida (`502`): `alert.evidence.uploaded` nunca sale

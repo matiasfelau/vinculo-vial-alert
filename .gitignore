@@ -1,6 +1,8 @@
 # Instrucciones de agente (no versionar)
 CLAUDE.md
 .clauderules
+clauderules
+CONTRATO-*.md
 
 # Binarios
 /alert
