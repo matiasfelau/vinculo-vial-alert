@@ -62,10 +62,12 @@ jobs:
 
       - name: Gate de cobertura sobre el código nuevo (>= 85 %)
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --no-tags origin "${{ github.base_ref }}"
+          git fetch --no-tags origin "$BASE_REF"
           diff-cover coverage.xml \
-            --compare-branch="origin/${{ github.base_ref }}" \
+            --compare-branch="origin/$BASE_REF" \
             --fail-under=85 \
             --markdown-report diff-cover.md || status=$?
           if [ -f diff-cover.md ]; then
