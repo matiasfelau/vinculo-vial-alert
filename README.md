@@ -128,6 +128,17 @@ Trivy local también lee el `.env` (está en `.gitignore`, así que el CI no lo 
 CI, escanear un checkout limpio. Las excepciones de Trivy van solo en `.trivyignore`, cada una con un
 comentario que diga por qué y hasta cuándo.
 
+Las pruebas usan SQLite en memoria. Las de concurrencia del cupo de US-16 (dos
+envíos simultáneos del mismo emisor a la misma patente) ejercitan el
+`pg_advisory_xact_lock`, que SQLite no tiene, así que corren sobre PostgreSQL si
+se define `ALERT_TEST_POSTGRES_URL` (cada prueba crea y borra su propio esquema);
+sin la variable corren sobre SQLite y verifican la regla, no la serialización:
+
+```
+docker run -d --rm --name alert-test-pg -e POSTGRES_USER=alert -e POSTGRES_PASSWORD=alert -e POSTGRES_DB=alert -p 127.0.0.1:55433:5432 postgres:16-alpine
+ALERT_TEST_POSTGRES_URL="postgres://alert:alert@127.0.0.1:55433/alert?sslmode=disable" go test ./... -count=1
+```
+
 ## Arquitectura
 
 El servicio sigue Clean Architecture:
@@ -139,6 +150,7 @@ El servicio sigue Clean Architecture:
 /internal/service/alert    caso de uso de creación de alertas con evidencia
 /internal/service/inbox    caso de uso de lectura del buzón de alertas
 /internal/service/deletion caso de uso de la baja de cuenta (user.deleted)
+/internal/service/admin    casos de uso del puerto de administración (US-17)
 /internal/service/outbox   worker de publicación en background (transactional outbox)
 /internal/circuitbreaker   circuit breaker genérico para llamadas salientes
 /internal/repository       persistencia (GORM/PostgreSQL)
@@ -159,15 +171,16 @@ El emisor nunca se entera de si el vehículo tiene dueños, y el sistema nunca l
 dice algo falso: toda alerta sigue el mismo camino (evidencia a S3, validación
 de IA, veredicto) y las dos llamadas responden igual con o sin dueños.
 
-**`POST /api/v1/alerts/attempts`** no lleva body: un `pat_enc` que llegue de un
-cliente viejo se ignora. Solo hace dos cosas: si el emisor está en
-`issuer_restrictions` con `UNDER_REVIEW` responde `403 ISSUER_UNDER_REVIEW`; si
-no, genera el `attempt_id` (futuro `alert_id` e `info` del HPKE de las fotos),
-lo guarda con TTL (`ATTEMPT_TTL_SECONDS`, un intento activo por emisor) y
-responde `201 { attempt_id, expires_at }`. No consulta a Vehicle ni guarda
-`owner_ids` ni `pat_enc_ia`, y desaparecieron `404 NOT_IN_NETWORK` y
-`ErrNotInNetwork`. La migración borra esas dos columnas de `alert_attempts` y
-conserva los intentos vigentes.
+**`POST /api/v1/alerts/attempts`** tiene un body opcional `{ "pat_enc" }` (hasta
+4 KB, el mismo límite que Gateway), que se usa solo para el control temprano del
+cupo (ver "Cupo por emisor y patente (US-16)"). Hace dos cosas: si el emisor
+está en `issuer_restrictions` con `UNDER_REVIEW` responde `403
+ISSUER_UNDER_REVIEW`; si no, genera el `attempt_id` (futuro `alert_id` e `info`
+del HPKE de las fotos), lo guarda con TTL (`ATTEMPT_TTL_SECONDS`, un intento
+activo por emisor) y responde `201 { attempt_id, expires_at }`. Nunca resuelve
+dueños ni guarda `owner_ids` ni `pat_enc_ia`, y desaparecieron `404
+NOT_IN_NETWORK` y `ErrNotInNetwork`. La migración borra esas dos columnas de
+`alert_attempts` y conserva los intentos vigentes.
 
 **`POST /api/v1/alerts`** (multipart) suma `pat_enc` a la parte `metadata`
 (`{ attempt_id, alert_type, pat_enc }`); si falta, `400 INVALID_EVIDENCE`. Alert
@@ -175,25 +188,72 @@ lo reenvía a Vehicle sin abrirlo ni guardarlo. El orden es deliberado:
 
 1. el emisor no está en revisión (`403`), la `metadata` y la evidencia son
    válidas y el intento existe y no venció (`404` / `410`);
-2. `resolve-owner(pat_enc, alert_id)` contra Vehicle, con su timeout y su
-   circuit breaker. Si falla, se corta **antes** de subir o persistir nada y el
+2. `resolve-owner(pat_enc, alert_id, issuer_id)` contra Vehicle, con su timeout y
+   su circuit breaker. Si falla, se corta **antes** de subir o persistir nada y el
    intento sigue vigente para que la app reintente: Vehicle `400` →
    `400 INVALID_PLATE_CRYPTOGRAM`; timeout, conexión o circuito abierto →
    `503 DEPENDENCY_UNAVAILABLE` con `Retry-After`; `5xx`, respuesta inválida u
    otro `4xx` → `502 UPSTREAM_BAD_GATEWAY`. En paralelo con Vehicle se llama a
    Identity para el registro de Audit (ver "Registro de Audit": `404` →
    `403 ACCOUNT_DELETED`, caído → `503`, respuesta inválida → `502`);
-3. se descarta al emisor de los dueños (y los repetidos): lo que queda son los
+3. control temprano del cupo con la `dedup_key` de Vehicle: ocupado → `409
+   ALERT_DAILY_LIMIT`, antes de subir nada;
+4. se descarta al emisor de los dueños (y los repetidos): lo que queda son los
    destinatarios, que pueden ser ninguno;
-4. subida de los originales a S3, y en una transacción la alerta
-   `PENDING_VALIDATION`, sus destinatarios, su evidencia y el outbox de
-   `alert.evidence.uploaded` y de `audit.alert.recorded`;
-5. `202 { alert_id, status: PENDING_VALIDATION }`, idéntico en todos los casos.
+5. subida de los originales a S3, y en una transacción el control definitivo del
+   cupo y la alerta `PENDING_VALIDATION`, sus destinatarios, su evidencia y el
+   outbox de `alert.evidence.uploaded` y de `audit.alert.recorded`;
+6. `202 { alert_id, status: PENDING_VALIDATION }`, idéntico en todos los casos.
 
 Vehicle devuelve `pat_enc_ia` siempre, también cuando la patente no tiene
 dueños, porque IA lo necesita para validar. Si falta o no es base64, el cliente
 lo trata como respuesta inválida (`502`): `alert.evidence.uploaded` nunca sale
 con `pat_enc_ia` vacío (además, el constructor del evento lo rechaza).
+
+### Cupo por emisor y patente (US-16)
+
+Un emisor puede tener como máximo `ALERT_DAILY_LIMIT_MAX` (1) alerta por patente
+dentro de una ventana móvil de `ALERT_DAILY_LIMIT_HOURS` (24 h). Ocupan el cupo
+las alertas `PENDING_VALIDATION` y `ACTIVE`; las `REJECTED` (RED) y las `EXPIRED`
+(sin respuesta de IA) lo liberan. La regla es igual con dueño que sin él: el
+emisor nunca aprende si la patente tiene dueños (Cold Start).
+
+**Alert nunca ve la patente.** Vehicle calcula la `dedup_key` = `HMAC-SHA256(
+ALERT_DEDUP_HMAC_KEY, issuer_id + ":" + patente normalizada)`, en hex (64
+caracteres), y Alert la guarda en `alerts.dedup_key` (`varchar(64)`, nula en las
+alertas anteriores, que no cuentan). Con ella cuenta las alertas de un emisor a
+una patente, pero no puede relacionar alertas de emisores distintos a la misma
+patente. La clave no se loguea ni sale en ninguna respuesta. El índice
+`(issuer_id, dedup_key, created_at)` sirve al conteo.
+
+Hay dos controles:
+
+- **Intento, opcional y temprano.** Si el body trae `pat_enc`, Alert pide la
+  `dedup_key` a Vehicle (`POST /internal/dedup-key`, con el timeout y el breaker
+  de Vehicle) y cuenta. Con el cupo ocupado responde `409 ALERT_DAILY_LIMIT` y
+  no crea el intento, para que la app no abra la captura. Es **fail-open**: si
+  Vehicle no responde, rechaza el criptograma o devuelve algo inválido, el
+  intento se crea igual, porque el envío vuelve a controlar. Un body ausente,
+  malformado o de más de 4 KB se trata como "sin `pat_enc`".
+- **Envío, definitivo.** `resolve-owner` se llama con `issuer_id` y devuelve la
+  `dedup_key`. Si no la devuelve, el envío falla con `502` (respuesta de Vehicle
+  fuera de contrato): sin clave no se puede contar y dejarlo pasar sería un
+  hueco silencioso en la regla. Hay un control previo a subir la evidencia y el
+  definitivo dentro de la misma transacción que el alta de la alerta, que empieza
+  tomando `pg_advisory_xact_lock` sobre `(issuer_id, dedup_key)` (un hash de 64
+  bits de las dos) y recién después cuenta. Dos envíos simultáneos no pueden
+  pasar los dos: el que llega segundo espera el lock, ve la alerta del primero y
+  recibe el `409` (y no un `410`). Si se rechaza, la transacción se revierte
+  entera (el intento sigue vigente) y la evidencia ya subida se borra.
+
+```json
+{ "error": "ya enviaste una alerta para esta patente", "code": "ALERT_DAILY_LIMIT", "available_at": "2026-11-16T12:30:00Z" }
+```
+
+`available_at` es el `created_at` más viejo entre las alertas que ocupan el cupo,
+más `ALERT_DAILY_LIMIT_HOURS`, en UTC (RFC 3339). Una alerta de hace exactamente
+la ventana ya no cuenta. Los dos valores son obligatoriamente mayores o iguales
+a 1: de lo contrario el servicio no arranca.
 
 ### Patentes sin dueños
 
@@ -515,6 +575,76 @@ ningún dato del dueño.
 El buzón (`GET /api/v1/alerts/inbox`) suma `seen: bool` a cada ítem, que es el
 `seen_at` de ese destinatario y no el de otro dueño.
 
+## Puerto de administración (US-17)
+
+Para revisar a los emisores que los dueños reportaron, Alert tiene un router de
+administración en **su propio `*http.Server`**, en `HTTP_ADMIN_PORT` (8082 por
+defecto), separado del público (`PORT`). Kong no lo expone y no hay rol de
+administrador: el acceso es por red privada y una clave.
+
+- **Autenticación:** toda ruta exige `X-Admin-Api-Key` igual a `ADMIN_API_KEY`,
+  comparada a tiempo constante (se comparan los SHA-256, así tampoco se filtra el
+  largo). Sin una clave válida responde `401 { "error", "code": "UNAUTHORIZED" }`
+  en cualquier ruta, exista o no, y antes de enrutar.
+- **Configuración:** con `ADMIN_API_KEY` vacía el router no arranca y el servicio
+  loguea un aviso. Con `APP_ENV=production`, una clave de menos de 32 caracteres
+  o igual a `INTERNAL_SERVICE_TOKEN` impide arrancar; fuera de producción solo se
+  avisa. La clave tiene que ser distinta en cada servicio. `HTTP_ADMIN_PORT` no
+  puede coincidir con `PORT`.
+- **Red:** `docker-compose.yml` lo publica solo en `127.0.0.1:8083` del host (el
+  8082 de Identity ocupa el otro puerto), para usar curl en desarrollo. En AWS
+  solo se alcanza desde la VPC (security group de administración y port
+  forwarding de SSM); eso se resuelve en la etapa de AWS.
+- **Errores:** `{ "error", "code" }`, como el resto del servicio.
+
+```
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" "http://127.0.0.1:8083/admin/v1/reported-alerts?issuer_id=<uuid>"
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" -o foto.jpg "http://127.0.0.1:8083/admin/v1/alerts/<alert_id>/evidence/GENERAL/0"
+```
+
+### `GET /admin/v1/reported-alerts?issuer_id={uuid}`
+
+Las alertas del emisor que al menos un dueño reportó, de la que se reportó
+primero a la última:
+
+```json
+{ "items": [ {
+  "alert_id": "…", "alert_type": "CRASHED",
+  "created_at": "…", "first_reported_at": "…",
+  "report_count": 2,
+  "evidence": [ { "role": "GENERAL", "index": 0 }, { "role": "PLATE", "index": 0 } ]
+} ] }
+```
+
+`report_count` es la cantidad de dueños que reportaron esa alerta;
+`first_reported_at` es el primero de esos reportes. **No se devuelve quién
+reportó ni el motivo.** `evidence` lista las fotos redactadas que todavía se
+pueden pedir: pasada la retención (`EVIDENCE_RETENTION_DAYS`, desde
+`validated_at`) viene vacía. Un emisor sin alertas reportadas devuelve
+`{ "items": [] }`; un `issuer_id` faltante o mal formado, `400 INVALID_ISSUER_ID`.
+
+### `GET /admin/v1/alerts/{alert_id}/evidence/{role}/{index}`
+
+La foto redactada, `image/jpeg` en streaming y `Cache-Control: no-store`: la misma
+que ve el dueño en `GET /api/v1/alerts/{alert_id}/evidence/{role}/{index}`. Se
+lee siempre de la copia de Alert, nunca de Audit, que tiene finalidad única.
+
+- `404 EVIDENCE_NOT_FOUND`: la alerta no existe, **nunca fue reportada** (el puerto
+  sirve evidencia de lo reportado, no es un visor general), o no tiene esa foto;
+  también un `alert_id`, rol o índice mal formados. Nunca se sirve el cifrado
+  original, solo la redactada.
+- `410 EVIDENCE_EXPIRED`: venció la retención, o el objeto ya no está en S3.
+- `503 DEPENDENCY_UNAVAILABLE` con `Retry-After`: S3 o la base no responden.
+
+### Desbloqueo
+
+Alert no desbloquea nada: lo hace Identity (`POST
+/admin/v1/review-cases/{user_id}/unblock`) y le avisa con `user.status.changed {
+user_id, account_status: "ACTIVE", reason: "MANUAL_UNBLOCK" }`, sin `actor`. Alert
+**ignora el `reason`**: un `ACTIVE` más reciente que el estado guardado levanta la
+restricción y el emisor vuelve a poder crear intentos y alertas. Está cubierto por
+una prueba que recorre el consumidor completo (`user_status_manual_unblock_test.go`).
+
 ## Eventos publicados
 
 Todos salen por el transactional outbox, con el envelope estándar
@@ -543,6 +673,6 @@ consume sobre topología existente, con ack manual, `prefetch` y `MAX_RETRIES`.
 | Cola (variable) | `eventType` | Efecto |
 |---|---|---|
 | `alert.ia-evidence-validated.q` (`VERDICT_QUEUE`) | `ia.evidence.validated.*` | aplica el veredicto de IA |
-| `alert.user-status-changed.q` (`USER_STATUS_QUEUE`) | `user.status.changed` | bloquea la creación de alertas a los emisores `UNDER_REVIEW` |
+| `alert.user-status-changed.q` (`USER_STATUS_QUEUE`) | `user.status.changed` | bloquea la creación de alertas a los emisores `UNDER_REVIEW` y se las devuelve al volver a `ACTIVE`, también con `reason: MANUAL_UNBLOCK` (el `reason` se ignora) |
 | `alert.vehicle-pending-claimed.q` (`PENDING_CLAIMED_QUEUE`) | `vehicle.pending.claimed` | entrega las alertas pendientes al primer dueño |
 | `alert.user-deleted.q` (`USER_DELETED_QUEUE`) | `user.deleted` | desvincula al usuario de sus alertas y fija la restricción `DELETED` (ver "Baja de cuenta") |

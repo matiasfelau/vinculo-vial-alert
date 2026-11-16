@@ -7,15 +7,26 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// appEnvProduction es el valor de APP_ENV con el que la configuración rechaza
+// los valores inseguros.
+const appEnvProduction = "production"
+
+// minAdminAPIKeyLength es el largo mínimo de ADMIN_API_KEY.
+const minAdminAPIKeyLength = 32
 
 // hoursPerDay convierte los días de retención a duración.
 const hoursPerDay = 24 * time.Hour
 
 // Config agrupa los parámetros de configuración requeridos por el servicio.
 type Config struct {
+	AppEnv                          string
 	Port                            string
+	AdminPort                       string
+	AdminAPIKey                     string
 	DatabaseURL                     string
 	DBMaxOpenConns                  int
 	VehicleInternalURL              string
@@ -56,6 +67,8 @@ type Config struct {
 	SentRetention                   time.Duration
 	PendingTimeout                  time.Duration
 	PendingDelivery                 time.Duration
+	AlertDailyLimitMax              int
+	AlertDailyLimitWindow           time.Duration
 	AccessTokenTTL                  time.Duration
 	SweeperInterval                 time.Duration
 }
@@ -64,7 +77,10 @@ type Config struct {
 // Retorna error si falta alguna variable obligatoria o si su formato es inválido.
 func Load() (Config, error) {
 	cfg := Config{
+		AppEnv:               strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))),
 		Port:                 getEnvDefault("PORT", "8080"),
+		AdminPort:            getEnvDefault("HTTP_ADMIN_PORT", "8082"),
+		AdminAPIKey:          os.Getenv("ADMIN_API_KEY"),
 		DatabaseURL:          os.Getenv("DATABASE_URL"),
 		VehicleInternalURL:   os.Getenv("VEHICLE_INTERNAL_URL"),
 		IdentityInternalURL:  os.Getenv("IDENTITY_INTERNAL_URL"),
@@ -291,6 +307,27 @@ func Load() (Config, error) {
 	}
 	cfg.PendingDelivery = time.Duration(pendingDeliveryHours) * time.Hour
 
+	// Cupo de US-16: como máximo ALERT_DAILY_LIMIT_MAX alertas por emisor y patente
+	// dentro de una ventana móvil de ALERT_DAILY_LIMIT_HOURS. En cero no habría
+	// regla, así que los dos tienen que ser mayores o iguales a 1.
+	dailyLimitMax, err := strconv.Atoi(getEnvDefault("ALERT_DAILY_LIMIT_MAX", "1"))
+	if err != nil {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_MAX inválido: %w", err)
+	}
+	if dailyLimitMax < 1 {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_MAX inválido: debe ser mayor o igual a 1, vino %d", dailyLimitMax)
+	}
+	cfg.AlertDailyLimitMax = dailyLimitMax
+
+	dailyLimitHours, err := strconv.Atoi(getEnvDefault("ALERT_DAILY_LIMIT_HOURS", "24"))
+	if err != nil {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_HOURS inválido: %w", err)
+	}
+	if dailyLimitHours < 1 {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_HOURS inválido: debe ser mayor o igual a 1, vino %d", dailyLimitHours)
+	}
+	cfg.AlertDailyLimitWindow = time.Duration(dailyLimitHours) * time.Hour
+
 	// ACCESS_TOKEN_TTL_MINUTES no tiene valor por defecto: la comparte con
 	// Identity, y un default que diverja de ese servicio acortaría o alargaría en
 	// silencio la ventana de la restricción DELETED. Ausente o inválida, el
@@ -303,7 +340,59 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	if err := validateAdmin(cfg); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// AdminEnabled indica si el router de administración arranca: solo con
+// ADMIN_API_KEY definida. Sin clave no hay forma de autenticar, así que el
+// puerto directamente no se abre.
+func (c Config) AdminEnabled() bool {
+	return c.AdminAPIKey != ""
+}
+
+// validateAdmin valida la configuración del puerto de administración. Una clave
+// vacía no es un error: deja el router apagado. Con APP_ENV=production, una
+// clave de menos de minAdminAPIKeyLength caracteres, o igual a
+// INTERNAL_SERVICE_TOKEN, impide arrancar. Fuera de producción esos dos casos
+// los avisa main con un log. Sin mostrar nunca el valor de la clave.
+func validateAdmin(cfg Config) error {
+	if !cfg.AdminEnabled() {
+		return nil
+	}
+	if cfg.AdminPort == cfg.Port {
+		return fmt.Errorf("HTTP_ADMIN_PORT inválido: no puede coincidir con PORT (%s)", cfg.Port)
+	}
+	if cfg.AppEnv != appEnvProduction {
+		return nil
+	}
+	if len(cfg.AdminAPIKey) < minAdminAPIKeyLength {
+		return fmt.Errorf("ADMIN_API_KEY inválida: con APP_ENV=production debe tener al menos %d caracteres", minAdminAPIKeyLength)
+	}
+	if cfg.AdminAPIKey == cfg.InternalServiceToken {
+		return fmt.Errorf("ADMIN_API_KEY inválida: con APP_ENV=production debe ser distinta de INTERNAL_SERVICE_TOKEN")
+	}
+	return nil
+}
+
+// AdminKeyWarnings devuelve los avisos de una ADMIN_API_KEY débil fuera de
+// producción (donde arrancar sigue permitido). Sin clave no hay avisos: el
+// router simplemente no arranca.
+func (c Config) AdminKeyWarnings() []string {
+	if !c.AdminEnabled() || c.AppEnv == appEnvProduction {
+		return nil
+	}
+	var warnings []string
+	if len(c.AdminAPIKey) < minAdminAPIKeyLength {
+		warnings = append(warnings, fmt.Sprintf("ADMIN_API_KEY tiene menos de %d caracteres: con APP_ENV=production el servicio no arrancaría", minAdminAPIKeyLength))
+	}
+	if c.AdminAPIKey == c.InternalServiceToken {
+		warnings = append(warnings, "ADMIN_API_KEY es igual a INTERNAL_SERVICE_TOKEN: con APP_ENV=production el servicio no arrancaría")
+	}
+	return warnings
 }
 
 // parsePositiveMillis lee una variable de entorno en milisegundos que debe ser

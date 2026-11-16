@@ -18,7 +18,9 @@ import (
 	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
+	"vinculo-vial-alert/internal/domain"
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
+	adminsvc "vinculo-vial-alert/internal/service/admin"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
 	attemptsvc "vinculo-vial-alert/internal/service/attempt"
 	deletionsvc "vinculo-vial-alert/internal/service/deletion"
@@ -182,8 +184,9 @@ func main() {
 		sweeper.Run(consumersCtx, cfg.SweeperInterval)
 	}()
 
-	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery)
-	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, cfg.AttemptTTL)
+	dailyLimit := domain.DailyLimit{Max: cfg.AlertDailyLimitMax, Window: cfg.AlertDailyLimitWindow}
+	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery, dailyLimit)
+	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, vehicleResolver, repo, dailyLimit, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo, cfg.EvidenceRetention)
 	ownerService := ownersvc.NewService(repopostgres.NewOwnerRepository(db), evidenceStore, cfg.EvidenceRetention)
 	alertHandler := deliveryhttp.NewAlertHandler(service, cfg.EvidenceMaxPartBytes, cfg.RetryAfter)
@@ -218,6 +221,32 @@ func main() {
 		}
 	}()
 
+	// Puerto de administración (US-17): su propio servidor, que Kong no publica.
+	// Sin ADMIN_API_KEY no hay con qué autenticar, así que no arranca.
+	var adminServer *http.Server
+	if cfg.AdminEnabled() {
+		for _, warning := range cfg.AdminKeyWarnings() {
+			log.Printf("aviso: %s", warning)
+		}
+		adminService := adminsvc.NewService(repopostgres.NewAdminRepository(db), evidenceStore, cfg.EvidenceRetention)
+		adminHandler := deliveryhttp.NewAdminHandler(adminService, cfg.RetryAfter)
+		adminServer = &http.Server{
+			Addr:              ":" + cfg.AdminPort,
+			Handler:           deliveryhttp.NewAdminRouter(adminHandler, cfg.AdminAPIKey),
+			ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+			ReadTimeout:       cfg.HTTPReadTimeout,
+			WriteTimeout:      cfg.HTTPWriteTimeout,
+			IdleTimeout:       cfg.HTTPIdleTimeout,
+		}
+		go func() {
+			if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("error al iniciar el servidor de administración: %v", err)
+			}
+		}()
+	} else {
+		log.Println("aviso: ADMIN_API_KEY no está definida; el puerto de administración no arranca")
+	}
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -232,6 +261,11 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("error durante el drenado de requests: %v", err)
+	}
+	if adminServer != nil {
+		if err := adminServer.Shutdown(ctx); err != nil {
+			log.Printf("error durante el drenado del puerto de administración: %v", err)
+		}
 	}
 
 	stopConsumers()

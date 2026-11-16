@@ -48,8 +48,39 @@ func (m *mockAttempts) Get(context.Context, uuid.UUID, uuid.UUID) (*domain.Attem
 
 var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
+// dedupDePrueba es el doble de Vehicle (dedup-key) y del conteo de alertas.
+type dedupDePrueba struct {
+	key        string
+	err        error
+	calls      int
+	gotPatEnc  string
+	gotIssuer  uuid.UUID
+	limitErr   error
+	checkCalls int
+	gotKey     string
+	gotLimit   domain.DailyLimit
+}
+
+func (m *dedupDePrueba) DedupKey(_ context.Context, patEnc string, issuerID uuid.UUID) (string, error) {
+	m.calls++
+	m.gotPatEnc, m.gotIssuer = patEnc, issuerID
+	return m.key, m.err
+}
+
+func (m *dedupDePrueba) CheckDailyLimit(_ context.Context, _ time.Time, _ uuid.UUID, dedupKey string, limit domain.DailyLimit) error {
+	m.checkCalls++
+	m.gotKey, m.gotLimit = dedupKey, limit
+	return m.limitErr
+}
+
+var limiteDePrueba = domain.DailyLimit{Max: 1, Window: 24 * time.Hour}
+
 func nuevoServicio(restrictions *mockRestrictions, attempts *mockAttempts) *CreateAttemptService {
-	svc := NewCreateAttemptService(restrictions, attempts, 10*time.Minute)
+	return nuevoServicioConCupo(restrictions, attempts, &dedupDePrueba{key: "k"})
+}
+
+func nuevoServicioConCupo(restrictions *mockRestrictions, attempts *mockAttempts, dedup *dedupDePrueba) *CreateAttemptService {
+	svc := NewCreateAttemptService(restrictions, attempts, dedup, dedup, limiteDePrueba, 10*time.Minute)
 	svc.now = func() time.Time { return ahora }
 	return svc
 }
