@@ -159,7 +159,7 @@ func TestAlertRepository_CreatePending_PersisteElRegistroDeAuditEnLaMismaTransac
 		t.Fatalf("no se pudo construir el evento: %v", err)
 	}
 
-	err = e.repo.CreatePending(context.Background(), e.now, e.alert, e.owners, e.evidence, e.event, recorded)
+	err = e.repo.CreatePending(context.Background(), e.now, domain.DailyLimit{}, e.alert, e.owners, e.evidence, e.event, recorded)
 
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
@@ -180,7 +180,7 @@ func TestAlertRepository_CreatePending_SiFallaElOutboxDeAudit_NoQuedaNada(t *tes
 	// Mismo id que el primer evento: la clave primaria del outbox lo rechaza.
 	recorded := domain.OutboxEvent{ID: e.event.ID, EventType: domain.EventTypeAuditRecorded, Payload: []byte(`{}`), CreatedAt: e.now}
 
-	err := e.repo.CreatePending(context.Background(), e.now, e.alert, e.owners, e.evidence, e.event, recorded)
+	err := e.repo.CreatePending(context.Background(), e.now, domain.DailyLimit{}, e.alert, e.owners, e.evidence, e.event, recorded)
 
 	if err == nil {
 		t.Fatal("se esperaba un error")

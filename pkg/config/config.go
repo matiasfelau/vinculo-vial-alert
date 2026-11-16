@@ -56,6 +56,8 @@ type Config struct {
 	SentRetention                   time.Duration
 	PendingTimeout                  time.Duration
 	PendingDelivery                 time.Duration
+	AlertDailyLimitMax              int
+	AlertDailyLimitWindow           time.Duration
 	AccessTokenTTL                  time.Duration
 	SweeperInterval                 time.Duration
 }
@@ -290,6 +292,27 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("PENDING_DELIVERY_HOURS inválido: debe ser mayor o igual a 1, vino %d", pendingDeliveryHours)
 	}
 	cfg.PendingDelivery = time.Duration(pendingDeliveryHours) * time.Hour
+
+	// Cupo de US-16: como máximo ALERT_DAILY_LIMIT_MAX alertas por emisor y patente
+	// dentro de una ventana móvil de ALERT_DAILY_LIMIT_HOURS. En cero no habría
+	// regla, así que los dos tienen que ser mayores o iguales a 1.
+	dailyLimitMax, err := strconv.Atoi(getEnvDefault("ALERT_DAILY_LIMIT_MAX", "1"))
+	if err != nil {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_MAX inválido: %w", err)
+	}
+	if dailyLimitMax < 1 {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_MAX inválido: debe ser mayor o igual a 1, vino %d", dailyLimitMax)
+	}
+	cfg.AlertDailyLimitMax = dailyLimitMax
+
+	dailyLimitHours, err := strconv.Atoi(getEnvDefault("ALERT_DAILY_LIMIT_HOURS", "24"))
+	if err != nil {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_HOURS inválido: %w", err)
+	}
+	if dailyLimitHours < 1 {
+		return Config{}, fmt.Errorf("ALERT_DAILY_LIMIT_HOURS inválido: debe ser mayor o igual a 1, vino %d", dailyLimitHours)
+	}
+	cfg.AlertDailyLimitWindow = time.Duration(dailyLimitHours) * time.Hour
 
 	// ACCESS_TOKEN_TTL_MINUTES no tiene valor por defecto: la comparte con
 	// Identity, y un default que diverja de ese servicio acortaría o alargaría en

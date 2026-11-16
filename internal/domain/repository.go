@@ -19,10 +19,17 @@ type AlertRepository interface {
 	// destinatarios pueden ser ninguno (la patente no tenía dueños): la alerta
 	// se crea igual, con su referencia pendiente si Vehicle la informó.
 	//
+	// Si la alerta trae DedupKey y limit.Max > 0, el control de cupo de US-16 va
+	// en la misma transacción, bajo un pg_advisory_xact_lock sobre
+	// (emisor, dedup_key): dos envíos simultáneos no pueden pasar los dos. Con el
+	// cupo ocupado devuelve *DailyLimitError y no persiste nada.
+	//
 	// El intento se borra condicionalmente (mismo id, mismo emisor, no
 	// vencido en now). Si no afecta ninguna fila, el intento venció o ya lo
 	// consumió otra solicitud: devuelve ErrAttemptExpired y no persiste nada.
-	CreatePending(ctx context.Context, now time.Time, alert *AlertHistory, destinationOwnerIDs []uuid.UUID, evidence []Evidence, outboxEvents ...OutboxEvent) error
+	CreatePending(ctx context.Context, now time.Time, limit DailyLimit, alert *AlertHistory, destinationOwnerIDs []uuid.UUID, evidence []Evidence, outboxEvents ...OutboxEvent) error
 	// Exists indica si la alerta existe.
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
+	// DailyLimitChecker es el control temprano del cupo, sin reservar nada.
+	DailyLimitChecker
 }

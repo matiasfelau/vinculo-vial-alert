@@ -94,9 +94,38 @@ type resolverDePrueba struct {
 	calls    int
 	patEnc   string
 	alertID  uuid.UUID
+	issuerID uuid.UUID
 	// sinAuditoria devuelve la respuesta tal cual está en resolved. Por defecto el
 	// doble completa pat_enc_audit y audit_key_id, que Vehicle devuelve siempre.
 	sinAuditoria bool
+
+	// dedupKey es la dedup_key que devuelve el doble en resolve-owner y en
+	// dedup-key; por defecto, dedupKeyDePrueba. dedupErr hace fallar solo a
+	// dedup-key (el control del intento), y dedupCalls cuenta sus llamadas.
+	dedupKey    string
+	sinDedupKey bool // resolve-owner responde sin dedup_key
+	dedupErr    error
+	dedupCalls  int
+	dedupPat    string
+}
+
+// dedupKeyDePrueba tiene la forma de la dedup_key: HMAC-SHA256 en hex.
+const dedupKeyDePrueba = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+
+func (m *resolverDePrueba) claveDeDuplicado() string {
+	if m.dedupKey != "" {
+		return m.dedupKey
+	}
+	return dedupKeyDePrueba
+}
+
+func (m *resolverDePrueba) DedupKey(_ context.Context, patEnc string, issuerID uuid.UUID) (string, error) {
+	m.dedupCalls++
+	m.dedupPat, m.issuerID = patEnc, issuerID
+	if m.dedupErr != nil {
+		return "", m.dedupErr
+	}
+	return m.claveDeDuplicado(), nil
 }
 
 const (
@@ -124,10 +153,13 @@ func (m *sealerDePrueba) SealDNI(_ context.Context, _, _ uuid.UUID) (domain.Seal
 	return domain.SealedDNI{DNIEncAudit: dniEncAuditDePrueba, AuditKeyID: auditKeyIDDePrueba}, nil
 }
 
-func (m *resolverDePrueba) ResolveOwners(_ context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
+func (m *resolverDePrueba) ResolveOwners(_ context.Context, patEnc string, alertID, issuerID uuid.UUID) (domain.ResolvedOwners, error) {
 	m.calls++
-	m.patEnc, m.alertID = patEnc, alertID
+	m.patEnc, m.alertID, m.issuerID = patEnc, alertID, issuerID
 	resolved := m.resolved
+	if resolved.DedupKey == "" && !m.sinDedupKey {
+		resolved.DedupKey = m.claveDeDuplicado()
+	}
 	if !m.sinAuditoria {
 		if resolved.PatEncAudit == "" {
 			resolved.PatEncAudit = patEncAuditDePrueba
@@ -160,13 +192,31 @@ type mockAlerts struct {
 	owners   []uuid.UUID
 	evidence []domain.Evidence
 	event    domain.OutboxEvent
+
+	// Cupo de US-16: checkErr es el control temprano y createLimitErr el
+	// definitivo de CreatePending. checkCalls cuenta los controles tempranos.
+	checkErr       error
+	createLimitErr error
+	checkCalls     int
+	gotCheckKey    string
 }
 
-func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, events ...domain.OutboxEvent) error {
+func (m *mockAlerts) CheckDailyLimit(_ context.Context, _ time.Time, _ uuid.UUID, dedupKey string, _ domain.DailyLimit) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.checkCalls++
+	m.gotCheckKey = dedupKey
+	return m.checkErr
+}
+
+func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, _ domain.DailyLimit, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, events ...domain.OutboxEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.err != nil {
 		return m.err
+	}
+	if m.createLimitErr != nil {
+		return m.createLimitErr
 	}
 	// DELETE condicional del intento: solo la primera solicitud lo consume.
 	for _, previa := range m.created {
@@ -319,8 +369,8 @@ func nuevasDeps() *testDeps {
 
 func (d *testDeps) router() *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	alertService := alert.NewCreateAlertService(d.restrictions, d.attempts, d.resolver, d.sealer, d.alerts, d.store, testBucket, time.Second, testPendingDelivery)
-	attemptService := attempt.NewCreateAttemptService(d.restrictions, d.attempts, 10*time.Minute)
+	alertService := alert.NewCreateAlertService(d.restrictions, d.attempts, d.resolver, d.sealer, d.alerts, d.store, testBucket, time.Second, testPendingDelivery, domain.DailyLimit{Max: 1, Window: 24 * time.Hour})
+	attemptService := attempt.NewCreateAttemptService(d.restrictions, d.attempts, d.resolver, d.alerts, domain.DailyLimit{Max: 1, Window: 24 * time.Hour}, 10*time.Minute)
 	return NewRouter(
 		NewAlertHandler(alertService, testMaxPartBytes, retryAfterDePrueba),
 		NewAttemptHandler(attemptService, retryAfterDePrueba),
