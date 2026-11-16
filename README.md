@@ -90,22 +90,22 @@ workflow declara `permissions: contents: read`. Dependabot actualiza semanalment
 
 - **Gate sobre el código nuevo:** `diff-cover` exige 85 % o más de las líneas que el PR agrega o
   cambia respecto de `origin/<base>`.
-- **Cobertura total:** se publica en el resumen del job y como artefacto `coverage`
-  (`coverage.out`, `coverage.xml`, `coverage-func.txt`), sin cortar. En v0.14, cuando todos los
-  repos estén en 85 % o más, el gate pasa a ser sobre el total.
+- **Gate sobre el total:** el job falla si la cobertura total del repo baja de 85 %. Se publica
+  además en el resumen del job y como artefacto `coverage` (`coverage.out`, `coverage.xml`,
+  `coverage-func.txt`).
 - **Pruebas incluidas:** todo `go test ./...`. El repo no tiene pruebas de integración en CI: la
   etiqueta `aws` (`internal/client/storage`) es opt-in y pega contra el bucket real de desarrollo,
   así que no corre ahí. Si aparece una etiqueta `integration`, se corre con su propio perfil y se
   une con `gocovmerge` antes de convertir.
-- **Exclusiones:** ninguna. Todo el código del repo es escrito a mano, y `cmd/api` cuenta como
-  cobertura 0 % en el total.
+- **Exclusiones:** ninguna. Todo el código del repo es escrito a mano. `cmd/api` también cuenta:
+  `main` solo llama a `run(ctx, cfg)`, que se prueba levantando y apagando el servicio.
 
 ### Correr en local
 
 ```
 # Cobertura (perfil, resumen y Cobertura XML)
 go test ./... -count=1 -covermode=atomic -coverpkg=./... -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -n 1
+go tool cover -func=coverage.out | tail -n 1   # el total tiene que ser >= 85 %
 go install github.com/boumenot/gocover-cobertura@v1.5.0
 gocover-cobertura < coverage.out > coverage.xml
 
@@ -144,7 +144,7 @@ ALERT_TEST_POSTGRES_URL="postgres://alert:alert@127.0.0.1:55433/alert?sslmode=di
 El servicio sigue Clean Architecture:
 
 ```
-/cmd/api                   punto de entrada
+/cmd/api                   punto de entrada: main carga la config y espera la señal; run(ctx, cfg) arma y apaga el servicio
 /internal/domain           entidades e interfaces del dominio
 /internal/service/attempt  caso de uso del intento de alerta
 /internal/service/alert    caso de uso de creación de alertas con evidencia
