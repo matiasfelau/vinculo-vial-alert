@@ -152,15 +152,16 @@ func TestAdminRepository_FindReportedEvidence_AlertaReportada_DevuelveLaClaveYLa
 func TestAdminRepository_FindReportedEvidence_SoloServeLaRedactada(t *testing.T) {
 	a := nuevaAlertaDelDueno(t, domain.AlertStatusActive)
 	reportar(t, a.db, a.alertID, a.owner, a.now)
+	// Un original en un índice donde no hay redactada: es lo único que existe ahí.
 	original := AlertEvidenceModel{
-		ID: uuid.New(), AlertID: a.alertID, Kind: string(domain.EvidenceKindOriginal), Role: string(domain.EvidenceRoleDetail), Idx: 0,
-		S3Key: domain.OriginalEvidenceKey(a.alertID, domain.EvidenceRoleDetail, 0), CreatedAt: a.now,
+		ID: uuid.New(), AlertID: a.alertID, Kind: string(domain.EvidenceKindOriginal), Role: string(domain.EvidenceRoleGeneral), Idx: 1,
+		S3Key: domain.OriginalEvidenceKey(a.alertID, domain.EvidenceRoleGeneral, 1), CreatedAt: a.now,
 	}
 	if err := a.db.Create(&original).Error; err != nil {
 		t.Fatalf("no se pudo crear el original: %v", err)
 	}
 
-	_, err := NewAdminRepository(a.db).FindReportedEvidence(context.Background(), a.alertID, domain.EvidenceRoleDetail, 0)
+	_, err := NewAdminRepository(a.db).FindReportedEvidence(context.Background(), a.alertID, domain.EvidenceRoleGeneral, 1)
 
 	if !errors.Is(err, domain.ErrReportedEvidenceNotFound) {
 		t.Fatalf("error = %v: el cifrado original nunca se sirve, solo la redactada", err)
@@ -178,7 +179,8 @@ func TestAdminRepository_FindReportedEvidence_LoQueNoEsDeUnaAlertaReportada_EsNo
 		},
 		"rol sin imagen": func(a *alertaDelDueno) (uuid.UUID, domain.EvidenceRole, int) {
 			reportar(t, a.db, a.alertID, a.owner, a.now)
-			return a.alertID, domain.EvidenceRoleContext, 0
+			// DETAIL ya no existe desde US-15: ningún rol vigente queda sin imagen en el fixture.
+			return a.alertID, domain.EvidenceRole("DETAIL"), 0
 		},
 		"índice sin imagen": func(a *alertaDelDueno) (uuid.UUID, domain.EvidenceRole, int) {
 			reportar(t, a.db, a.alertID, a.owner, a.now)

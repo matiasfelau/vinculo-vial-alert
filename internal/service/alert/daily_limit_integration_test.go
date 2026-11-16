@@ -196,8 +196,8 @@ func TestEnvioReal_DosEnviosSimultaneos_SoloPasaUno(t *testing.T) {
 	if total := contarFilas(t, db, "alerts", "issuer_id = ? AND dedup_key = ?", issuerID, dedupKeyTest); total != 1 {
 		t.Errorf("alertas del emisor para la patente = %d, se esperaba exactamente 1", total)
 	}
-	if total := contarFilas(t, db, "alert_evidence", "alert_id = ?", attemptID); total != 4 {
-		t.Errorf("filas de evidencia = %d, se esperaban las 4 del ganador", total)
+	if total := contarFilas(t, db, "alert_evidence", "alert_id = ?", attemptID); total != 2 {
+		t.Errorf("filas de evidencia = %d, se esperaban las 2 del ganador", total)
 	}
 	if total := contarFilas(t, db, "outbox_events", "1 = 1"); total != 2 {
 		t.Errorf("eventos de outbox = %d, se esperaban 2 (alert.evidence.uploaded y audit.alert.recorded) solo del ganador", total)
@@ -207,11 +207,11 @@ func TestEnvioReal_DosEnviosSimultaneos_SoloPasaUno(t *testing.T) {
 	}
 
 	almacenes := []*mockStore{envioA.store, envioB.store}
-	if got := len(almacenes[ganador].objects); got != 4 {
-		t.Errorf("objetos del ganador en el almacén = %d, se esperaban 4", got)
+	if got := len(almacenes[ganador].objects); got != 2 {
+		t.Errorf("objetos del ganador en el almacén = %d, se esperaban 2", got)
 	}
-	if got := len(almacenes[perdedor].deletedKeys()); got != 4 {
-		t.Errorf("objetos borrados del perdedor = %d, se esperaban los 4 que subió", got)
+	if got := len(almacenes[perdedor].deletedKeys()); got != 2 {
+		t.Errorf("objetos borrados del perdedor = %d, se esperaban los 2 que subió", got)
 	}
 	if got := len(almacenes[perdedor].objects); got != 0 {
 		t.Errorf("el perdedor dejó %d objetos huérfanos", got)
