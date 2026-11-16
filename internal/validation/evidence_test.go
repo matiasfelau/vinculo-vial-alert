@@ -12,8 +12,6 @@ func TestEvidenceRole(t *testing.T) {
 	casos := map[string]domain.EvidenceRole{
 		"general": domain.EvidenceRoleGeneral,
 		"plate":   domain.EvidenceRolePlate,
-		"detail":  domain.EvidenceRoleDetail,
-		"context": domain.EvidenceRoleContext,
 	}
 	for nombre, want := range casos {
 		got, err := EvidenceRole(nombre)
@@ -22,7 +20,7 @@ func TestEvidenceRole(t *testing.T) {
 		}
 	}
 
-	for _, invalido := range []string{"", "metadata", "GENERAL", "selfie", "general ", "detail-0"} {
+	for _, invalido := range []string{"", "metadata", "GENERAL", "selfie", "general ", "plate-0", "detail", "context"} {
 		if _, err := EvidenceRole(invalido); !errors.Is(err, ErrEvidenciaInvalida) {
 			t.Errorf("EvidenceRole(%q): error = %v, se esperaba ErrEvidenciaInvalida", invalido, err)
 		}
@@ -47,12 +45,15 @@ func TestEvidencePartAllowed(t *testing.T) {
 	}{
 		{"choque: primera general", domain.AlertTypeCrashed, domain.EvidenceRoleGeneral, 0, true},
 		{"choque: segunda general sobra", domain.AlertTypeCrashed, domain.EvidenceRoleGeneral, 1, false},
-		{"choque: tercer detalle", domain.AlertTypeCrashed, domain.EvidenceRoleDetail, 2, true},
-		{"choque: cuarto detalle sobra", domain.AlertTypeCrashed, domain.EvidenceRoleDetail, 3, false},
-		{"choque: context no corresponde", domain.AlertTypeCrashed, domain.EvidenceRoleContext, 0, false},
-		{"garaje: contexto", domain.AlertTypeParkedOnGarage, domain.EvidenceRoleContext, 0, true},
-		{"garaje: segundo contexto sobra", domain.AlertTypeParkedOnGarage, domain.EvidenceRoleContext, 1, false},
-		{"garaje: detail no corresponde", domain.AlertTypeParkedOnGarage, domain.EvidenceRoleDetail, 0, false},
+		{"choque: primera patente", domain.AlertTypeCrashed, domain.EvidenceRolePlate, 0, true},
+		{"choque: segunda patente sobra", domain.AlertTypeCrashed, domain.EvidenceRolePlate, 1, false},
+		{"choque: detail ya no existe", domain.AlertTypeCrashed, domain.EvidenceRole("DETAIL"), 0, false},
+		{"choque: context ya no existe", domain.AlertTypeCrashed, domain.EvidenceRole("CONTEXT"), 0, false},
+		{"garaje: primera general", domain.AlertTypeParkedOnGarage, domain.EvidenceRoleGeneral, 0, true},
+		{"garaje: primera patente", domain.AlertTypeParkedOnGarage, domain.EvidenceRolePlate, 0, true},
+		{"garaje: segunda patente sobra", domain.AlertTypeParkedOnGarage, domain.EvidenceRolePlate, 1, false},
+		{"garaje: context ya no existe", domain.AlertTypeParkedOnGarage, domain.EvidenceRole("CONTEXT"), 0, false},
+		{"garaje: detail ya no existe", domain.AlertTypeParkedOnGarage, domain.EvidenceRole("DETAIL"), 0, false},
 		{"tipo deshabilitado no admite nada", domain.AlertTypeParkedTooClose, domain.EvidenceRoleGeneral, 0, false},
 		{"tipo desconocido no admite nada", domain.AlertType("OTRO"), domain.EvidenceRoleGeneral, 0, false},
 	}
@@ -70,19 +71,18 @@ func TestEvidencePartAllowed(t *testing.T) {
 }
 
 func TestEvidenceComplete(t *testing.T) {
-	general, plate, detail, context := domain.EvidenceRoleGeneral, domain.EvidenceRolePlate, domain.EvidenceRoleDetail, domain.EvidenceRoleContext
+	general, plate := domain.EvidenceRoleGeneral, domain.EvidenceRolePlate
 	casos := []struct {
 		nombre    string
 		alertType domain.AlertType
 		counts    map[domain.EvidenceRole]int
 		wantOK    bool
 	}{
-		{"choque completo con 1 detalle", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{general: 1, plate: 1, detail: 1}, true},
-		{"choque completo con 3 detalles", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{general: 1, plate: 1, detail: 3}, true},
-		{"choque sin detalle", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{general: 1, plate: 1}, false},
-		{"choque sin patente", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{general: 1, detail: 1}, false},
-		{"garaje completo", domain.AlertTypeParkedOnGarage, map[domain.EvidenceRole]int{general: 1, plate: 1, context: 1}, true},
-		{"garaje sin contexto", domain.AlertTypeParkedOnGarage, map[domain.EvidenceRole]int{general: 1, plate: 1}, false},
+		{"choque completo", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{general: 1, plate: 1}, true},
+		{"choque sin patente", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{general: 1}, false},
+		{"choque sin general", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{plate: 1}, false},
+		{"garaje completo", domain.AlertTypeParkedOnGarage, map[domain.EvidenceRole]int{general: 1, plate: 1}, true},
+		{"garaje sin patente", domain.AlertTypeParkedOnGarage, map[domain.EvidenceRole]int{general: 1}, false},
 		{"sin nada", domain.AlertTypeCrashed, map[domain.EvidenceRole]int{}, false},
 	}
 	for _, c := range casos {
@@ -99,8 +99,8 @@ func TestEvidenceComplete(t *testing.T) {
 }
 
 func TestMaxEvidenceParts(t *testing.T) {
-	// CRASHED es el tipo con más fotos: general + plate + hasta 3 detalles.
-	if got := MaxEvidenceParts(); got != 5 {
-		t.Fatalf("MaxEvidenceParts = %d, se esperaba 5", got)
+	// Todo tipo de alerta lleva exactamente dos fotos: general y plate.
+	if got := MaxEvidenceParts(); got != 2 {
+		t.Fatalf("MaxEvidenceParts = %d, se esperaba 2", got)
 	}
 }

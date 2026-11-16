@@ -27,7 +27,6 @@ func payloadValido(alertID uuid.UUID) map[string]any {
 		"redacted": []map[string]any{
 			{"role": "GENERAL", "index": 0, "key": domain.RedactedEvidenceKey(alertID, domain.EvidenceRoleGeneral, 0)},
 			{"role": "PLATE", "index": 0, "key": domain.RedactedEvidenceKey(alertID, domain.EvidenceRolePlate, 0)},
-			{"role": "DETAIL", "index": 2, "key": domain.RedactedEvidenceKey(alertID, domain.EvidenceRoleDetail, 2)},
 		},
 	}
 }
@@ -59,7 +58,7 @@ func TestParseValidationResult_GreenValido(t *testing.T) {
 	if result.AlertID != alertID || result.Verdict != domain.VerdictGreen || len(result.ReasonCodes) != 0 {
 		t.Errorf("resultado = %+v", result)
 	}
-	if len(result.Redacted) != 3 || result.Redacted[2].Role != domain.EvidenceRoleDetail || result.Redacted[2].Index != 2 {
+	if len(result.Redacted) != 2 || result.Redacted[1].Role != domain.EvidenceRolePlate || result.Redacted[1].Index != 0 {
 		t.Errorf("redacted = %+v", result.Redacted)
 	}
 	var scores map[string]*float64
@@ -155,7 +154,15 @@ func TestParseValidationResult_PayloadsInvalidos_EnvuelvenErrInvalidMessage(t *t
 			p["redacted"] = []map[string]any{{"role": "GENERAL", "index": 1, "key": domain.RedactedEvidenceKey(id, domain.EvidenceRoleGeneral, 1)}}
 		},
 		"redacted con índice negativo": func(p map[string]any) {
-			p["redacted"] = []map[string]any{{"role": "DETAIL", "index": -1, "key": "x"}}
+			p["redacted"] = []map[string]any{{"role": "PLATE", "index": -1, "key": "x"}}
+		},
+		"redacted con un rol que ya no existe (DETAIL)": func(p map[string]any) {
+			id, _ := uuid.Parse(p["alert_id"].(string))
+			p["redacted"] = []map[string]any{{"role": "DETAIL", "index": 0, "key": domain.RedactedEvidenceKey(id, domain.EvidenceRole("DETAIL"), 0)}}
+		},
+		"redacted con un rol que ya no existe (CONTEXT)": func(p map[string]any) {
+			id, _ := uuid.Parse(p["alert_id"].(string))
+			p["redacted"] = []map[string]any{{"role": "CONTEXT", "index": 0, "key": domain.RedactedEvidenceKey(id, domain.EvidenceRole("CONTEXT"), 0)}}
 		},
 		"redacted con la clave de otra alerta": func(p map[string]any) {
 			p["redacted"] = []map[string]any{{"role": "GENERAL", "index": 0, "key": domain.RedactedEvidenceKey(otraAlerta, domain.EvidenceRoleGeneral, 0)}}

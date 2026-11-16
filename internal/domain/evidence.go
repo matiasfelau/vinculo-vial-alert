@@ -34,11 +34,6 @@ const (
 	EvidenceRoleGeneral EvidenceRole = "GENERAL"
 	// EvidenceRolePlate es el primer plano de la patente.
 	EvidenceRolePlate EvidenceRole = "PLATE"
-	// EvidenceRoleDetail es el primer plano del daño (solo CRASHED).
-	EvidenceRoleDetail EvidenceRole = "DETAIL"
-	// EvidenceRoleContext es el costado del auto y el rebaje, tomada desde la
-	// vereda (solo PARKED_ON_GARAGE).
-	EvidenceRoleContext EvidenceRole = "CONTEXT"
 )
 
 // Slug es la forma en minúsculas del rol, la que usan los nombres de las

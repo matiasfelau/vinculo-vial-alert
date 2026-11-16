@@ -252,8 +252,6 @@ func fotosDeChoque() []domain.EvidenceUpload {
 	return []domain.EvidenceUpload{
 		{Role: domain.EvidenceRoleGeneral, Index: 0, Ciphertext: []byte("cifrado-general")},
 		{Role: domain.EvidenceRolePlate, Index: 0, Ciphertext: []byte("cifrado-patente")},
-		{Role: domain.EvidenceRoleDetail, Index: 0, Ciphertext: []byte("cifrado-detalle-0")},
-		{Role: domain.EvidenceRoleDetail, Index: 1, Ciphertext: []byte("cifrado-detalle-1")},
 	}
 }
 
@@ -302,8 +300,6 @@ func TestExecute_CasoExitoso_SubeLosOriginalesYRegistraLaAlertaPendiente(t *test
 	esperados := map[string]string{
 		claveEsperada(f.attempt.ID, "general-0"): "cifrado-general",
 		claveEsperada(f.attempt.ID, "plate-0"):   "cifrado-patente",
-		claveEsperada(f.attempt.ID, "detail-0"):  "cifrado-detalle-0",
-		claveEsperada(f.attempt.ID, "detail-1"):  "cifrado-detalle-1",
 	}
 	if len(f.store.objects) != len(esperados) {
 		t.Fatalf("objetos subidos = %d, se esperaban %d", len(f.store.objects), len(esperados))
@@ -339,8 +335,8 @@ func TestExecute_CasoExitoso_PersisteLaAlertaConDestinatariosYEvidencia(t *testi
 		t.Errorf("created_at = %v, se esperaba %v", got.CreatedAt, ahora)
 	}
 
-	if len(f.alerts.evidence) != 4 {
-		t.Fatalf("filas de evidencia = %d, se esperaban 4", len(f.alerts.evidence))
+	if len(f.alerts.evidence) != 2 {
+		t.Fatalf("filas de evidencia = %d, se esperaban 2", len(f.alerts.evidence))
 	}
 	sum := sha256.Sum256([]byte("cifrado-general"))
 	for _, item := range f.alerts.evidence {
@@ -392,14 +388,14 @@ func TestExecute_CasoExitoso_EncolaAlertEvidenceUploadedSinActorNiIdentificadore
 	if payload.Bucket != testBucket {
 		t.Errorf("bucket = %q, se esperaba %q", payload.Bucket, testBucket)
 	}
-	if len(payload.Evidence) != 4 {
-		t.Fatalf("evidence = %d, se esperaban 4", len(payload.Evidence))
+	if len(payload.Evidence) != 2 {
+		t.Fatalf("evidence = %d, se esperaban 2", len(payload.Evidence))
 	}
 	if payload.Evidence[0].Role != "GENERAL" || payload.Evidence[0].Key != claveEsperada(f.attempt.ID, "general-0") {
 		t.Errorf("evidence[0] = %+v", payload.Evidence[0])
 	}
-	if payload.Evidence[3].Role != "DETAIL" || payload.Evidence[3].Index != 1 {
-		t.Errorf("evidence[3] = %+v", payload.Evidence[3])
+	if payload.Evidence[1].Role != "PLATE" || payload.Evidence[1].Index != 0 || payload.Evidence[1].Key != claveEsperada(f.attempt.ID, "plate-0") {
+		t.Errorf("evidence[1] = %+v", payload.Evidence[1])
 	}
 
 	raw := string(event.Payload)
@@ -458,8 +454,8 @@ func TestExecute_FalloParcialDeS3_BorraLoSubidoYResponde503(t *testing.T) {
 	if f.alerts.created != 0 {
 		t.Error("no debe persistirse la alerta si falló un PUT")
 	}
-	if len(f.store.deletedKeys()) != 4 {
-		t.Errorf("claves borradas = %v, se esperaban las 4 intentadas (un PUT cancelado pudo completarse igual)", f.store.deletedKeys())
+	if len(f.store.deletedKeys()) != 2 {
+		t.Errorf("claves borradas = %v, se esperaban las 2 intentadas (un PUT cancelado pudo completarse igual)", f.store.deletedKeys())
 	}
 	if len(f.store.objects) != 0 {
 		t.Errorf("no debe quedar ningún objeto en el almacén: %v", f.store.objects)
@@ -524,7 +520,7 @@ func TestExecute_FallaLaTransaccion_BorraLosObjetos(t *testing.T) {
 	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba ErrDatabaseUnavailable", err)
 	}
-	if len(f.store.deletedKeys()) != 4 || len(f.store.objects) != 0 {
+	if len(f.store.deletedKeys()) != 2 || len(f.store.objects) != 0 {
 		t.Errorf("claves borradas = %v, objetos restantes = %d: la falla de la TX debe limpiar el almacén", f.store.deletedKeys(), len(f.store.objects))
 	}
 }
@@ -540,8 +536,8 @@ func TestExecute_IntentoConsumidoEnLaTransaccion_BorraLosObjetosSiLaAlertaNoExis
 	if !errors.Is(err, domain.ErrAttemptExpired) {
 		t.Fatalf("error = %v, se esperaba ErrAttemptExpired (410)", err)
 	}
-	if len(f.store.deletedKeys()) != 4 {
-		t.Errorf("claves borradas = %v, se esperaba limpiar los 4 objetos huérfanos", f.store.deletedKeys())
+	if len(f.store.deletedKeys()) != 2 {
+		t.Errorf("claves borradas = %v, se esperaba limpiar los 2 objetos huérfanos", f.store.deletedKeys())
 	}
 }
 
@@ -581,8 +577,8 @@ func TestExecute_CarreraDosPostConElMismoIntento_UnoGanaYElOtroRecibe410SinBorra
 	if len(f.store.deletedKeys()) != 0 {
 		t.Errorf("la perdedora borró %v, pero la alerta ganadora existe y referencia esas claves", f.store.deletedKeys())
 	}
-	if len(f.store.objects) != 4 {
-		t.Errorf("objetos en el almacén = %d, se esperaban los 4 de la alerta ganadora", len(f.store.objects))
+	if len(f.store.objects) != 2 {
+		t.Errorf("objetos en el almacén = %d, se esperaban los 2 de la alerta ganadora", len(f.store.objects))
 	}
 }
 
@@ -614,7 +610,35 @@ func TestExecute_LaLimpiezaSobreviveALaCancelacionDelEmisor(t *testing.T) {
 	if len(f.store.objects) != 0 {
 		t.Errorf("objetos restantes = %d: la limpieza no debe heredar la cancelación del request", len(f.store.objects))
 	}
-	if len(f.store.deletedKeys()) != 4 {
-		t.Errorf("claves borradas = %v, se esperaban 4", f.store.deletedKeys())
+	if len(f.store.deletedKeys()) != 2 {
+		t.Errorf("claves borradas = %v, se esperaban 2", f.store.deletedKeys())
+	}
+}
+
+func TestExecute_CadaTipoDeAlertaSubeDosFotosYPideLaValidacionDeIA(t *testing.T) {
+	// US-15: CRASHED y PARKED_ON_GARAGE llevan exactamente GENERAL y PLATE, y
+	// ambos llegan al veredicto con un único evento hacia IA de dos referencias.
+	for _, alertType := range []domain.AlertType{domain.AlertTypeCrashed, domain.AlertTypeParkedOnGarage} {
+		t.Run(string(alertType), func(t *testing.T) {
+			f := nuevoFixture(t)
+			input := f.input()
+			input.AlertType = alertType
+
+			if _, err := f.svc.Execute(context.Background(), input); err != nil {
+				t.Fatalf("error inesperado: %v", err)
+			}
+
+			if len(f.store.objects) != 2 || len(f.alerts.evidence) != 2 {
+				t.Errorf("objetos = %d, filas = %d; se esperaban 2 y 2", len(f.store.objects), len(f.alerts.evidence))
+			}
+			var payload domain.EvidenceUploadedPayload
+			if err := json.Unmarshal(f.alerts.event.Payload, &payload); err != nil {
+				t.Fatalf("payload inválido: %v", err)
+			}
+			if payload.AlertType != alertType || len(payload.Evidence) != 2 ||
+				payload.Evidence[0].Role != domain.EvidenceRoleGeneral || payload.Evidence[1].Role != domain.EvidenceRolePlate {
+				t.Errorf("payload = %+v, se esperaban GENERAL y PLATE", payload)
+			}
+		})
 	}
 }

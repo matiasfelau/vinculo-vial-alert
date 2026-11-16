@@ -135,10 +135,11 @@ func alertaValidada(t *testing.T, db *gorm.DB, validatedAt *time.Time, redactada
 		}
 	}
 	var ids []uuid.UUID
+	roles := []domain.EvidenceRole{domain.EvidenceRoleGeneral, domain.EvidenceRolePlate}
 	for i := 0; i < redactadas; i++ {
 		fila := AlertEvidenceModel{
-			ID: uuid.New(), AlertID: alertID, Kind: string(domain.EvidenceKindRedacted), Role: string(domain.EvidenceRoleDetail), Idx: int16(i),
-			S3Key: domain.RedactedEvidenceKey(alertID, domain.EvidenceRoleDetail, i), CreatedAt: ahoraSweeper,
+			ID: uuid.New(), AlertID: alertID, Kind: string(domain.EvidenceKindRedacted), Role: string(roles[i]), Idx: 0,
+			S3Key: domain.RedactedEvidenceKey(alertID, roles[i], 0), CreatedAt: ahoraSweeper,
 		}
 		if err := db.Create(&fila).Error; err != nil {
 			t.Fatalf("no se pudo crear la evidencia: %v", err)
@@ -220,9 +221,9 @@ func TestSweeperRepository_DeleteEvidenceRows_SoloLasIndicadas(t *testing.T) {
 	db := nuevaDBDePrueba(t)
 	repo := NewSweeperRepository(db)
 	vencida := ahoraSweeper.Add(-90 * 24 * time.Hour)
-	alertID, ids := alertaValidada(t, db, &vencida, 3)
+	alertID, ids := alertaValidada(t, db, &vencida, 2)
 
-	if err := repo.DeleteEvidenceRows(context.Background(), ids[:2]); err != nil {
+	if err := repo.DeleteEvidenceRows(context.Background(), ids[:1]); err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
 

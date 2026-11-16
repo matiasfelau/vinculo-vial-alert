@@ -322,7 +322,7 @@ func TestInboxRepository_FindByOwner_ItemAmpliado(t *testing.T) {
 	for _, slot := range []struct {
 		role  domain.EvidenceRole
 		index int
-	}{{domain.EvidenceRoleDetail, 1}, {domain.EvidenceRolePlate, 0}, {domain.EvidenceRoleDetail, 0}, {domain.EvidenceRoleGeneral, 0}} {
+	}{{domain.EvidenceRolePlate, 0}, {domain.EvidenceRoleGeneral, 0}} {
 		fila := AlertEvidenceModel{ID: uuid.New(), AlertID: alertID, Kind: string(domain.EvidenceKindRedacted), Role: string(slot.role), Idx: int16(slot.index),
 			S3Key: domain.RedactedEvidenceKey(alertID, slot.role, slot.index), CreatedAt: now}
 		if err := db.Create(&fila).Error; err != nil {
@@ -362,11 +362,9 @@ func TestInboxRepository_FindByOwner_ItemAmpliado(t *testing.T) {
 	want := []domain.InboxEvidence{
 		{Role: domain.EvidenceRoleGeneral, Index: 0},
 		{Role: domain.EvidenceRolePlate, Index: 0},
-		{Role: domain.EvidenceRoleDetail, Index: 0},
-		{Role: domain.EvidenceRoleDetail, Index: 1},
 	}
 	if !reflect.DeepEqual(item.Evidence, want) {
-		t.Errorf("evidence = %v, se esperaba %v (general, plate, detail, context; solo redactadas)", item.Evidence, want)
+		t.Errorf("evidence = %v, se esperaba %v (general y plate; solo redactadas)", item.Evidence, want)
 	}
 }
 
