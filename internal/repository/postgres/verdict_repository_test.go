@@ -36,7 +36,7 @@ func resultadoDe(e *escenario, verdict domain.Verdict, codes ...domain.ReasonCod
 		ModelVersions: json.RawMessage(`{"detector":"d1"}`),
 		Redacted: []domain.RedactedRef{
 			{Role: domain.EvidenceRoleGeneral, Index: 0, Key: domain.RedactedEvidenceKey(e.alert.ID, domain.EvidenceRoleGeneral, 0)},
-			{Role: domain.EvidenceRoleDetail, Index: 1, Key: domain.RedactedEvidenceKey(e.alert.ID, domain.EvidenceRoleDetail, 1)},
+			{Role: domain.EvidenceRolePlate, Index: 0, Key: domain.RedactedEvidenceKey(e.alert.ID, domain.EvidenceRolePlate, 0)},
 		},
 	}
 }
@@ -167,7 +167,7 @@ func TestVerdictRepository_Activate_RegistraLasRedactadasYDescartaLosOriginales(
 		t.Errorf("las filas de los originales debían borrarse, quedaron %v", got)
 	}
 	redactadas := clavesDeEvidencia(t, e, domain.EvidenceKindRedacted)
-	if len(redactadas) != 2 || redactadas[0] != domain.RedactedEvidenceKey(e.alert.ID, domain.EvidenceRoleDetail, 1) {
+	if len(redactadas) != 2 || redactadas[0] != domain.RedactedEvidenceKey(e.alert.ID, domain.EvidenceRoleGeneral, 0) {
 		t.Errorf("redactadas = %v", redactadas)
 	}
 	var sha *string

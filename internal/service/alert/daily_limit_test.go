@@ -62,8 +62,8 @@ func TestExecute_Cupo_ElControlDefinitivoRechazaYBorraLoSubido(t *testing.T) {
 	if !errors.As(err, &limite) || !limite.AvailableAt.Equal(disponible) {
 		t.Fatalf("error = %v, se esperaba el DailyLimitError con available_at = %v", err, disponible)
 	}
-	if got := len(f.store.deletedKeys()); got != 4 {
-		t.Errorf("objetos borrados = %d, se esperaban los 4 subidos: el envío rechazado no deja evidencia huérfana", got)
+	if got := len(f.store.deletedKeys()); got != 2 {
+		t.Errorf("objetos borrados = %d, se esperaban los 2 subidos (general y plate): el envío rechazado no deja evidencia huérfana", got)
 	}
 	if len(f.store.objects) != 0 {
 		t.Errorf("quedaron %d objetos en el almacén", len(f.store.objects))

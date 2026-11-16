@@ -115,8 +115,8 @@ func nuevoEscenario(t *testing.T) *escenario {
 	evidence := []domain.Evidence{
 		{ID: uuid.New(), AlertID: alert.ID, Kind: domain.EvidenceKindOriginal, Role: domain.EvidenceRoleGeneral, Index: 0,
 			S3Key: domain.OriginalEvidenceKey(alert.ID, domain.EvidenceRoleGeneral, 0), SHA256: strings.Repeat("a", 64), CreatedAt: now},
-		{ID: uuid.New(), AlertID: alert.ID, Kind: domain.EvidenceKindOriginal, Role: domain.EvidenceRoleDetail, Index: 1,
-			S3Key: domain.OriginalEvidenceKey(alert.ID, domain.EvidenceRoleDetail, 1), SHA256: strings.Repeat("b", 64), CreatedAt: now},
+		{ID: uuid.New(), AlertID: alert.ID, Kind: domain.EvidenceKindOriginal, Role: domain.EvidenceRolePlate, Index: 0,
+			S3Key: domain.OriginalEvidenceKey(alert.ID, domain.EvidenceRolePlate, 0), SHA256: strings.Repeat("b", 64), CreatedAt: now},
 	}
 	event, err := domain.NewEvidenceUploadedEvent(uuid.New(), domain.EvidenceUploadedPayload{
 		AlertID: alert.ID, AlertType: alert.AlertType, PatEncIA: "Y3JpcHRvZ3JhbWE=", Bucket: "bucket",
@@ -267,7 +267,7 @@ func TestAlertRepository_CreatePending_PersisteDestinatariosEvidenciaYOutbox(t *
 	if leidas[0].Kind != domain.EvidenceKindOriginal || leidas[0].Role != domain.EvidenceRoleGeneral || leidas[0].S3Key != e.evidence[0].S3Key || leidas[0].SHA256 != e.evidence[0].SHA256 {
 		t.Errorf("evidencia[0] = %+v", leidas[0])
 	}
-	if leidas[1].Role != domain.EvidenceRoleDetail || leidas[1].Index != 1 {
+	if leidas[1].Role != domain.EvidenceRolePlate || leidas[1].Index != 0 {
 		t.Errorf("evidencia[1] = %+v", leidas[1])
 	}
 

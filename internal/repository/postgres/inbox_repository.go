@@ -58,12 +58,10 @@ func parseCreatedAt(s string) (time.Time, error) {
 }
 
 // evidenceRoleOrder fija el orden en que el buzón lista las imágenes de una
-// alerta: primero el vehículo, luego la patente, el daño y el contexto.
+// alerta: primero el vehículo y luego la patente.
 var evidenceRoleOrder = map[domain.EvidenceRole]int{
 	domain.EvidenceRoleGeneral: 0,
 	domain.EvidenceRolePlate:   1,
-	domain.EvidenceRoleDetail:  2,
-	domain.EvidenceRoleContext: 3,
 }
 
 // InboxRepository implementa domain.InboxRepository sobre GORM/PostgreSQL.

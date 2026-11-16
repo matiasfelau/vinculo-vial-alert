@@ -195,8 +195,8 @@ func TestCreateAlert_CupoOcupadoEnElControlDefinitivo_Devuelve409YBorraLaEvidenc
 	rec := envioForzado(t, deps, issuerID, attemptID)
 
 	verificarCupoOcupado(t, rec)
-	if deps.store.puts != 4 || len(deps.store.deleted) != 4 {
-		t.Errorf("puts = %d, borrados = %d; se esperaban 4 y 4: el envío rechazado no deja evidencia huérfana", deps.store.puts, len(deps.store.deleted))
+	if deps.store.puts != 2 || len(deps.store.deleted) != 2 {
+		t.Errorf("puts = %d, borrados = %d; se esperaban 2 y 2 (general y plate): el envío rechazado no deja evidencia huérfana", deps.store.puts, len(deps.store.deleted))
 	}
 	if len(deps.alerts.created) != 0 {
 		t.Error("no debe crearse la alerta")
