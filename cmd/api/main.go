@@ -18,6 +18,7 @@ import (
 	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
+	"vinculo-vial-alert/internal/domain"
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
 	attemptsvc "vinculo-vial-alert/internal/service/attempt"
@@ -182,8 +183,9 @@ func main() {
 		sweeper.Run(consumersCtx, cfg.SweeperInterval)
 	}()
 
-	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery)
-	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, cfg.AttemptTTL)
+	dailyLimit := domain.DailyLimit{Max: cfg.AlertDailyLimitMax, Window: cfg.AlertDailyLimitWindow}
+	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery, dailyLimit)
+	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, vehicleResolver, repo, dailyLimit, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo, cfg.EvidenceRetention)
 	ownerService := ownersvc.NewService(repopostgres.NewOwnerRepository(db), evidenceStore, cfg.EvidenceRetention)
 	alertHandler := deliveryhttp.NewAlertHandler(service, cfg.EvidenceMaxPartBytes, cfg.RetryAfter)

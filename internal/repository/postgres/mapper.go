@@ -19,6 +19,10 @@ func toModel(alert *domain.AlertHistory) AlertModel {
 		state := string(alert.AuditState)
 		model.AuditState = &state
 	}
+	if alert.DedupKey != "" {
+		key := alert.DedupKey
+		model.DedupKey = &key
+	}
 	return model
 }
 

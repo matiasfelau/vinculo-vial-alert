@@ -217,7 +217,7 @@ func TestUserDeletionRepository_Apply_UnIntentoEnCursoYaNoSePuedeCompletar(t *te
 		t.Fatalf("no se pudo construir el evento: %v", err)
 	}
 
-	err = NewAlertRepository(m.db).CreatePending(context.Background(), m.now, alert, nil, nil, event)
+	err = NewAlertRepository(m.db).CreatePending(context.Background(), m.now, domain.DailyLimit{}, alert, nil, nil, event)
 
 	if !errors.Is(err, domain.ErrAttemptExpired) {
 		t.Fatalf("error = %v, se esperaba ErrAttemptExpired", err)

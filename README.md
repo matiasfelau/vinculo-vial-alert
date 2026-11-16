@@ -71,6 +71,17 @@ CGO_ENABLED=0 go build -o alert ./cmd/api
 docker compose up --build
 ```
 
+Las pruebas usan SQLite en memoria. Las de concurrencia del cupo de US-16 (dos
+envíos simultáneos del mismo emisor a la misma patente) ejercitan el
+`pg_advisory_xact_lock`, que SQLite no tiene, así que corren sobre PostgreSQL si
+se define `ALERT_TEST_POSTGRES_URL` (cada prueba crea y borra su propio esquema);
+sin la variable corren sobre SQLite y verifican la regla, no la serialización:
+
+```
+docker run -d --rm --name alert-test-pg -e POSTGRES_USER=alert -e POSTGRES_PASSWORD=alert -e POSTGRES_DB=alert -p 127.0.0.1:55433:5432 postgres:16-alpine
+ALERT_TEST_POSTGRES_URL="postgres://alert:alert@127.0.0.1:55433/alert?sslmode=disable" go test ./... -count=1
+```
+
 ## Arquitectura
 
 El servicio sigue Clean Architecture:
@@ -102,15 +113,16 @@ El emisor nunca se entera de si el vehículo tiene dueños, y el sistema nunca l
 dice algo falso: toda alerta sigue el mismo camino (evidencia a S3, validación
 de IA, veredicto) y las dos llamadas responden igual con o sin dueños.
 
-**`POST /api/v1/alerts/attempts`** no lleva body: un `pat_enc` que llegue de un
-cliente viejo se ignora. Solo hace dos cosas: si el emisor está en
-`issuer_restrictions` con `UNDER_REVIEW` responde `403 ISSUER_UNDER_REVIEW`; si
-no, genera el `attempt_id` (futuro `alert_id` e `info` del HPKE de las fotos),
-lo guarda con TTL (`ATTEMPT_TTL_SECONDS`, un intento activo por emisor) y
-responde `201 { attempt_id, expires_at }`. No consulta a Vehicle ni guarda
-`owner_ids` ni `pat_enc_ia`, y desaparecieron `404 NOT_IN_NETWORK` y
-`ErrNotInNetwork`. La migración borra esas dos columnas de `alert_attempts` y
-conserva los intentos vigentes.
+**`POST /api/v1/alerts/attempts`** tiene un body opcional `{ "pat_enc" }` (hasta
+4 KB, el mismo límite que Gateway), que se usa solo para el control temprano del
+cupo (ver "Cupo por emisor y patente (US-16)"). Hace dos cosas: si el emisor
+está en `issuer_restrictions` con `UNDER_REVIEW` responde `403
+ISSUER_UNDER_REVIEW`; si no, genera el `attempt_id` (futuro `alert_id` e `info`
+del HPKE de las fotos), lo guarda con TTL (`ATTEMPT_TTL_SECONDS`, un intento
+activo por emisor) y responde `201 { attempt_id, expires_at }`. Nunca resuelve
+dueños ni guarda `owner_ids` ni `pat_enc_ia`, y desaparecieron `404
+NOT_IN_NETWORK` y `ErrNotInNetwork`. La migración borra esas dos columnas de
+`alert_attempts` y conserva los intentos vigentes.
 
 **`POST /api/v1/alerts`** (multipart) suma `pat_enc` a la parte `metadata`
 (`{ attempt_id, alert_type, pat_enc }`); si falta, `400 INVALID_EVIDENCE`. Alert
@@ -118,25 +130,72 @@ lo reenvía a Vehicle sin abrirlo ni guardarlo. El orden es deliberado:
 
 1. el emisor no está en revisión (`403`), la `metadata` y la evidencia son
    válidas y el intento existe y no venció (`404` / `410`);
-2. `resolve-owner(pat_enc, alert_id)` contra Vehicle, con su timeout y su
-   circuit breaker. Si falla, se corta **antes** de subir o persistir nada y el
+2. `resolve-owner(pat_enc, alert_id, issuer_id)` contra Vehicle, con su timeout y
+   su circuit breaker. Si falla, se corta **antes** de subir o persistir nada y el
    intento sigue vigente para que la app reintente: Vehicle `400` →
    `400 INVALID_PLATE_CRYPTOGRAM`; timeout, conexión o circuito abierto →
    `503 DEPENDENCY_UNAVAILABLE` con `Retry-After`; `5xx`, respuesta inválida u
    otro `4xx` → `502 UPSTREAM_BAD_GATEWAY`. En paralelo con Vehicle se llama a
    Identity para el registro de Audit (ver "Registro de Audit": `404` →
    `403 ACCOUNT_DELETED`, caído → `503`, respuesta inválida → `502`);
-3. se descarta al emisor de los dueños (y los repetidos): lo que queda son los
+3. control temprano del cupo con la `dedup_key` de Vehicle: ocupado → `409
+   ALERT_DAILY_LIMIT`, antes de subir nada;
+4. se descarta al emisor de los dueños (y los repetidos): lo que queda son los
    destinatarios, que pueden ser ninguno;
-4. subida de los originales a S3, y en una transacción la alerta
-   `PENDING_VALIDATION`, sus destinatarios, su evidencia y el outbox de
-   `alert.evidence.uploaded` y de `audit.alert.recorded`;
-5. `202 { alert_id, status: PENDING_VALIDATION }`, idéntico en todos los casos.
+5. subida de los originales a S3, y en una transacción el control definitivo del
+   cupo y la alerta `PENDING_VALIDATION`, sus destinatarios, su evidencia y el
+   outbox de `alert.evidence.uploaded` y de `audit.alert.recorded`;
+6. `202 { alert_id, status: PENDING_VALIDATION }`, idéntico en todos los casos.
 
 Vehicle devuelve `pat_enc_ia` siempre, también cuando la patente no tiene
 dueños, porque IA lo necesita para validar. Si falta o no es base64, el cliente
 lo trata como respuesta inválida (`502`): `alert.evidence.uploaded` nunca sale
 con `pat_enc_ia` vacío (además, el constructor del evento lo rechaza).
+
+### Cupo por emisor y patente (US-16)
+
+Un emisor puede tener como máximo `ALERT_DAILY_LIMIT_MAX` (1) alerta por patente
+dentro de una ventana móvil de `ALERT_DAILY_LIMIT_HOURS` (24 h). Ocupan el cupo
+las alertas `PENDING_VALIDATION` y `ACTIVE`; las `REJECTED` (RED) y las `EXPIRED`
+(sin respuesta de IA) lo liberan. La regla es igual con dueño que sin él: el
+emisor nunca aprende si la patente tiene dueños (Cold Start).
+
+**Alert nunca ve la patente.** Vehicle calcula la `dedup_key` = `HMAC-SHA256(
+ALERT_DEDUP_HMAC_KEY, issuer_id + ":" + patente normalizada)`, en hex (64
+caracteres), y Alert la guarda en `alerts.dedup_key` (`varchar(64)`, nula en las
+alertas anteriores, que no cuentan). Con ella cuenta las alertas de un emisor a
+una patente, pero no puede relacionar alertas de emisores distintos a la misma
+patente. La clave no se loguea ni sale en ninguna respuesta. El índice
+`(issuer_id, dedup_key, created_at)` sirve al conteo.
+
+Hay dos controles:
+
+- **Intento, opcional y temprano.** Si el body trae `pat_enc`, Alert pide la
+  `dedup_key` a Vehicle (`POST /internal/dedup-key`, con el timeout y el breaker
+  de Vehicle) y cuenta. Con el cupo ocupado responde `409 ALERT_DAILY_LIMIT` y
+  no crea el intento, para que la app no abra la captura. Es **fail-open**: si
+  Vehicle no responde, rechaza el criptograma o devuelve algo inválido, el
+  intento se crea igual, porque el envío vuelve a controlar. Un body ausente,
+  malformado o de más de 4 KB se trata como "sin `pat_enc`".
+- **Envío, definitivo.** `resolve-owner` se llama con `issuer_id` y devuelve la
+  `dedup_key`. Si no la devuelve, el envío falla con `502` (respuesta de Vehicle
+  fuera de contrato): sin clave no se puede contar y dejarlo pasar sería un
+  hueco silencioso en la regla. Hay un control previo a subir la evidencia y el
+  definitivo dentro de la misma transacción que el alta de la alerta, que empieza
+  tomando `pg_advisory_xact_lock` sobre `(issuer_id, dedup_key)` (un hash de 64
+  bits de las dos) y recién después cuenta. Dos envíos simultáneos no pueden
+  pasar los dos: el que llega segundo espera el lock, ve la alerta del primero y
+  recibe el `409` (y no un `410`). Si se rechaza, la transacción se revierte
+  entera (el intento sigue vigente) y la evidencia ya subida se borra.
+
+```json
+{ "error": "ya enviaste una alerta para esta patente", "code": "ALERT_DAILY_LIMIT", "available_at": "2026-11-16T12:30:00Z" }
+```
+
+`available_at` es el `created_at` más viejo entre las alertas que ocupan el cupo,
+más `ALERT_DAILY_LIMIT_HOURS`, en UTC (RFC 3339). Una alerta de hace exactamente
+la ventana ya no cuenta. Los dos valores son obligatoriamente mayores o iguales
+a 1: de lo contrario el servicio no arranca.
 
 ### Patentes sin dueños
 

@@ -26,7 +26,10 @@ type BreakerResolver struct {
 	breaker *circuitbreaker.Breaker
 }
 
-var _ domain.OwnerResolver = (*BreakerResolver)(nil)
+var (
+	_ domain.OwnerResolver    = (*BreakerResolver)(nil)
+	_ domain.DedupKeyResolver = (*BreakerResolver)(nil)
+)
 
 // NewBreakerResolver construye un BreakerResolver a partir del resolver real
 // y un breaker ya configurado.
@@ -38,13 +41,41 @@ func NewBreakerResolver(inner domain.OwnerResolver, breaker *circuitbreaker.Brea
 // falla de inmediato con domain.ErrVehicleUnavailable sin llamar al
 // resolver interno: el caso de uso lo mapea a 503 igual que una caída real,
 // que es la semántica correcta desde la perspectiva del cliente.
-func (r *BreakerResolver) ResolveOwners(ctx context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
+func (r *BreakerResolver) ResolveOwners(ctx context.Context, patEnc string, alertID, issuerID uuid.UUID) (domain.ResolvedOwners, error) {
+	var resolved domain.ResolvedOwners
+	err := r.guard(func() error {
+		var err error
+		resolved, err = r.inner.ResolveOwners(ctx, patEnc, alertID, issuerID)
+		return err
+	})
+	return resolved, err
+}
+
+// DedupKey implementa domain.DedupKeyResolver con el mismo circuit breaker que
+// ResolveOwners: es el mismo upstream. Si el resolver interno no lo implementa,
+// falla con domain.ErrVehicleRejected sin llamar a nadie.
+func (r *BreakerResolver) DedupKey(ctx context.Context, patEnc string, issuerID uuid.UUID) (string, error) {
+	dedup, ok := r.inner.(domain.DedupKeyResolver)
+	if !ok {
+		return "", domain.ErrVehicleRejected
+	}
+	var key string
+	err := r.guard(func() error {
+		var err error
+		key, err = dedup.DedupKey(ctx, patEnc, issuerID)
+		return err
+	})
+	return key, err
+}
+
+// guard ejecuta call bajo el breaker y registra su resultado.
+func (r *BreakerResolver) guard(call func() error) error {
 	if !r.breaker.Allow() {
 		slog.Warn("vehicle resolver: circuito abierto, no se llama a vehicle")
-		return domain.ResolvedOwners{}, domain.ErrVehicleUnavailable
+		return domain.ErrVehicleUnavailable
 	}
 
-	resolved, err := r.inner.ResolveOwners(ctx, patEnc, alertID)
+	err := call()
 	switch {
 	case errors.Is(err, domain.ErrVehicleUnavailable), errors.Is(err, domain.ErrVehicleBadResponse):
 		r.breaker.RecordFailure()
@@ -56,6 +87,5 @@ func (r *BreakerResolver) ResolveOwners(ctx context.Context, patEnc string, aler
 		// domain.ErrVehicleRejected): Vehicle respondió con normalidad.
 		r.breaker.RecordSuccess()
 	}
-
-	return resolved, err
+	return err
 }

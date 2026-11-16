@@ -21,6 +21,10 @@ type mockResolver struct {
 	calls    int
 	patEnc   string
 	alertID  uuid.UUID
+	issuerID uuid.UUID
+	// sinDedupKey devuelve la respuesta sin dedup_key. Por defecto el doble la
+	// completa, porque Vehicle la devuelve siempre que el pedido trae issuer_id.
+	sinDedupKey bool
 	// sinAuditoria devuelve la respuesta tal cual está en resolved. Por defecto el
 	// doble completa pat_enc_audit y audit_key_id, que Vehicle devuelve siempre.
 	sinAuditoria bool
@@ -28,13 +32,16 @@ type mockResolver struct {
 	onCall func()
 }
 
-func (m *mockResolver) ResolveOwners(_ context.Context, patEnc string, alertID uuid.UUID) (domain.ResolvedOwners, error) {
+func (m *mockResolver) ResolveOwners(_ context.Context, patEnc string, alertID, issuerID uuid.UUID) (domain.ResolvedOwners, error) {
 	m.calls++
-	m.patEnc, m.alertID = patEnc, alertID
+	m.patEnc, m.alertID, m.issuerID = patEnc, alertID, issuerID
 	if m.onCall != nil {
 		m.onCall()
 	}
 	resolved := m.resolved
+	if !m.sinDedupKey && resolved.DedupKey == "" {
+		resolved.DedupKey = dedupKeyTest
+	}
 	if !m.sinAuditoria {
 		if resolved.PatEncAudit == "" {
 			resolved.PatEncAudit = patEncAuditTest

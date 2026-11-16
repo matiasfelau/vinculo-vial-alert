@@ -29,7 +29,13 @@ const (
 	patEncAuditTest = "Y3JpcHRvZ3JhbWEtYXVkaXQtcGF0ZW50ZQ=="
 	dniEncAuditTest = "Y3JpcHRvZ3JhbWEtYXVkaXQtZG5p"
 	auditKeyIDTest  = "clave-audit-1"
+
+	// dedupKeyTest tiene la forma de la dedup_key: HMAC-SHA256 en hex.
+	dedupKeyTest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
+
+// limiteDePrueba es el cupo por defecto: una alerta cada 24 h.
+var limiteDePrueba = domain.DailyLimit{Max: 1, Window: 24 * time.Hour}
 
 var ahora = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
@@ -83,16 +89,39 @@ type mockAlerts struct {
 	events      []domain.OutboxEvent
 	existsCalls int
 	onCreate    func()
+
+	// Cupo de US-16. checkErr es lo que devuelve el control temprano y
+	// createLimitErr lo que devuelve el definitivo de CreatePending (un envío
+	// simultáneo que ganó el lock después del control temprano).
+	checkErr       error
+	createLimitErr error
+	checkCalls     int
+	gotCheckIssuer uuid.UUID
+	gotCheckKey    string
+	gotCheckLimit  domain.DailyLimit
+	gotCreateLimit domain.DailyLimit
 }
 
-func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, events ...domain.OutboxEvent) error {
+func (m *mockAlerts) CheckDailyLimit(_ context.Context, _ time.Time, issuerID uuid.UUID, dedupKey string, limit domain.DailyLimit) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.checkCalls++
+	m.gotCheckIssuer, m.gotCheckKey, m.gotCheckLimit = issuerID, dedupKey, limit
+	return m.checkErr
+}
+
+func (m *mockAlerts) CreatePending(_ context.Context, _ time.Time, limit domain.DailyLimit, alert *domain.AlertHistory, owners []uuid.UUID, evidence []domain.Evidence, events ...domain.OutboxEvent) error {
 	if m.onCreate != nil {
 		m.onCreate()
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.gotCreateLimit = limit
 	if m.err != nil {
 		return m.err
+	}
+	if m.createLimitErr != nil {
+		return m.createLimitErr
 	}
 	if m.consumed {
 		return domain.ErrAttemptExpired
@@ -207,7 +236,7 @@ func nuevoFixture(t *testing.T) *fixture {
 		alerts:   &mockAlerts{},
 		store:    newMockStore(),
 	}
-	f.svc = NewCreateAlertService(&mockRestrictions{}, f.attempts, f.resolver, f.sealer, f.alerts, f.store, testBucket, testPutBudget, testPendingDelivery)
+	f.svc = NewCreateAlertService(&mockRestrictions{}, f.attempts, f.resolver, f.sealer, f.alerts, f.store, testBucket, testPutBudget, testPendingDelivery, limiteDePrueba)
 	f.svc.now = func() time.Time { return ahora }
 	return f
 }
@@ -244,7 +273,7 @@ func TestCheckIssuer(t *testing.T) {
 	}
 	for nombre, caso := range casos {
 		t.Run(nombre, func(t *testing.T) {
-			svc := NewCreateAlertService(caso.restrictions, &mockAttempts{}, &mockResolver{}, &mockSealer{}, &mockAlerts{}, newMockStore(), testBucket, testPutBudget, testPendingDelivery)
+			svc := NewCreateAlertService(caso.restrictions, &mockAttempts{}, &mockResolver{}, &mockSealer{}, &mockAlerts{}, newMockStore(), testBucket, testPutBudget, testPendingDelivery, limiteDePrueba)
 
 			err := svc.CheckIssuer(context.Background(), uuid.New())
 
