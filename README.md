@@ -144,7 +144,7 @@ ALERT_TEST_POSTGRES_URL="postgres://alert:alert@127.0.0.1:55433/alert?sslmode=di
 El servicio sigue Clean Architecture:
 
 ```
-/cmd/api                   punto de entrada
+/cmd/api                   punto de entrada: main carga la config y espera la señal; run(ctx, cfg) arma y apaga el servicio
 /internal/domain           entidades e interfaces del dominio
 /internal/service/attempt  caso de uso del intento de alerta
 /internal/service/alert    caso de uso de creación de alertas con evidencia
