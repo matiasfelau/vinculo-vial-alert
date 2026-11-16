@@ -51,7 +51,7 @@ jobs:
       - name: Convertir a Cobertura XML
         run: gocover-cobertura < coverage.out > coverage.xml
 
-      - name: Cobertura total (informativa)
+      - name: Cobertura total (resumen)
         run: |
           {
             echo "## Cobertura total"
@@ -59,6 +59,13 @@ jobs:
             echo "$(go tool cover -func=coverage.out | tail -n 1)"
           } >> "$GITHUB_STEP_SUMMARY"
           go tool cover -func=coverage.out > coverage-func.txt
+
+      # Segundo gate, sobre el total del repo: ninguna rama puede bajarlo de 85 %.
+      - name: Gate de cobertura total (>= 85 %)
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%", "", $3); print $3 }')"
+          echo "Cobertura total: ${total} %"
+          awk -v t="${total}" 'BEGIN { exit (t >= 85) ? 0 : 1 }'
 
       - name: Gate de cobertura sobre el código nuevo (>= 85 %)
         if: github.event_name == 'pull_request'
