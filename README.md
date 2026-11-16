@@ -93,6 +93,7 @@ El servicio sigue Clean Architecture:
 /internal/service/alert    caso de uso de creación de alertas con evidencia
 /internal/service/inbox    caso de uso de lectura del buzón de alertas
 /internal/service/deletion caso de uso de la baja de cuenta (user.deleted)
+/internal/service/admin    casos de uso del puerto de administración (US-17)
 /internal/service/outbox   worker de publicación en background (transactional outbox)
 /internal/circuitbreaker   circuit breaker genérico para llamadas salientes
 /internal/repository       persistencia (GORM/PostgreSQL)
@@ -517,6 +518,76 @@ ningún dato del dueño.
 El buzón (`GET /api/v1/alerts/inbox`) suma `seen: bool` a cada ítem, que es el
 `seen_at` de ese destinatario y no el de otro dueño.
 
+## Puerto de administración (US-17)
+
+Para revisar a los emisores que los dueños reportaron, Alert tiene un router de
+administración en **su propio `*http.Server`**, en `HTTP_ADMIN_PORT` (8082 por
+defecto), separado del público (`PORT`). Kong no lo expone y no hay rol de
+administrador: el acceso es por red privada y una clave.
+
+- **Autenticación:** toda ruta exige `X-Admin-Api-Key` igual a `ADMIN_API_KEY`,
+  comparada a tiempo constante (se comparan los SHA-256, así tampoco se filtra el
+  largo). Sin una clave válida responde `401 { "error", "code": "UNAUTHORIZED" }`
+  en cualquier ruta, exista o no, y antes de enrutar.
+- **Configuración:** con `ADMIN_API_KEY` vacía el router no arranca y el servicio
+  loguea un aviso. Con `APP_ENV=production`, una clave de menos de 32 caracteres
+  o igual a `INTERNAL_SERVICE_TOKEN` impide arrancar; fuera de producción solo se
+  avisa. La clave tiene que ser distinta en cada servicio. `HTTP_ADMIN_PORT` no
+  puede coincidir con `PORT`.
+- **Red:** `docker-compose.yml` lo publica solo en `127.0.0.1:8083` del host (el
+  8082 de Identity ocupa el otro puerto), para usar curl en desarrollo. En AWS
+  solo se alcanza desde la VPC (security group de administración y port
+  forwarding de SSM); eso se resuelve en la etapa de AWS.
+- **Errores:** `{ "error", "code" }`, como el resto del servicio.
+
+```
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" "http://127.0.0.1:8083/admin/v1/reported-alerts?issuer_id=<uuid>"
+curl -H "X-Admin-Api-Key: $ADMIN_API_KEY" -o foto.jpg "http://127.0.0.1:8083/admin/v1/alerts/<alert_id>/evidence/GENERAL/0"
+```
+
+### `GET /admin/v1/reported-alerts?issuer_id={uuid}`
+
+Las alertas del emisor que al menos un dueño reportó, de la que se reportó
+primero a la última:
+
+```json
+{ "items": [ {
+  "alert_id": "…", "alert_type": "CRASHED",
+  "created_at": "…", "first_reported_at": "…",
+  "report_count": 2,
+  "evidence": [ { "role": "GENERAL", "index": 0 }, { "role": "PLATE", "index": 0 } ]
+} ] }
+```
+
+`report_count` es la cantidad de dueños que reportaron esa alerta;
+`first_reported_at` es el primero de esos reportes. **No se devuelve quién
+reportó ni el motivo.** `evidence` lista las fotos redactadas que todavía se
+pueden pedir: pasada la retención (`EVIDENCE_RETENTION_DAYS`, desde
+`validated_at`) viene vacía. Un emisor sin alertas reportadas devuelve
+`{ "items": [] }`; un `issuer_id` faltante o mal formado, `400 INVALID_ISSUER_ID`.
+
+### `GET /admin/v1/alerts/{alert_id}/evidence/{role}/{index}`
+
+La foto redactada, `image/jpeg` en streaming y `Cache-Control: no-store`: la misma
+que ve el dueño en `GET /api/v1/alerts/{alert_id}/evidence/{role}/{index}`. Se
+lee siempre de la copia de Alert, nunca de Audit, que tiene finalidad única.
+
+- `404 EVIDENCE_NOT_FOUND`: la alerta no existe, **nunca fue reportada** (el puerto
+  sirve evidencia de lo reportado, no es un visor general), o no tiene esa foto;
+  también un `alert_id`, rol o índice mal formados. Nunca se sirve el cifrado
+  original, solo la redactada.
+- `410 EVIDENCE_EXPIRED`: venció la retención, o el objeto ya no está en S3.
+- `503 DEPENDENCY_UNAVAILABLE` con `Retry-After`: S3 o la base no responden.
+
+### Desbloqueo
+
+Alert no desbloquea nada: lo hace Identity (`POST
+/admin/v1/review-cases/{user_id}/unblock`) y le avisa con `user.status.changed {
+user_id, account_status: "ACTIVE", reason: "MANUAL_UNBLOCK" }`, sin `actor`. Alert
+**ignora el `reason`**: un `ACTIVE` más reciente que el estado guardado levanta la
+restricción y el emisor vuelve a poder crear intentos y alertas. Está cubierto por
+una prueba que recorre el consumidor completo (`user_status_manual_unblock_test.go`).
+
 ## Eventos publicados
 
 Todos salen por el transactional outbox, con el envelope estándar
@@ -545,6 +616,6 @@ consume sobre topología existente, con ack manual, `prefetch` y `MAX_RETRIES`.
 | Cola (variable) | `eventType` | Efecto |
 |---|---|---|
 | `alert.ia-evidence-validated.q` (`VERDICT_QUEUE`) | `ia.evidence.validated.*` | aplica el veredicto de IA |
-| `alert.user-status-changed.q` (`USER_STATUS_QUEUE`) | `user.status.changed` | bloquea la creación de alertas a los emisores `UNDER_REVIEW` |
+| `alert.user-status-changed.q` (`USER_STATUS_QUEUE`) | `user.status.changed` | bloquea la creación de alertas a los emisores `UNDER_REVIEW` y se las devuelve al volver a `ACTIVE`, también con `reason: MANUAL_UNBLOCK` (el `reason` se ignora) |
 | `alert.vehicle-pending-claimed.q` (`PENDING_CLAIMED_QUEUE`) | `vehicle.pending.claimed` | entrega las alertas pendientes al primer dueño |
 | `alert.user-deleted.q` (`USER_DELETED_QUEUE`) | `user.deleted` | desvincula al usuario de sus alertas y fija la restricción `DELETED` (ver "Baja de cuenta") |
