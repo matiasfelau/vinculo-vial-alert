@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -238,6 +239,84 @@ func TestServe_PuertoDeAdministracionOcupadoDevuelveElError(t *testing.T) {
 	err = waitDone(t, done)
 	if err == nil || !strings.Contains(err.Error(), "error al iniciar el servidor de administración") {
 		t.Fatalf("se esperaba el error del servidor de administración, llegó %v", err)
+	}
+}
+
+// notSQLPool oculta el *sql.DB subyacente: db.DB() no puede devolverlo.
+type notSQLPool struct{ gorm.ConnPool }
+
+// poolDialector es un dialecto que, tras inicializarse, cambia el pool de
+// conexiones de GORM.
+type poolDialector struct {
+	gorm.Dialector
+	wrap func(gorm.ConnPool) gorm.ConnPool
+}
+
+func (d poolDialector) Initialize(db *gorm.DB) error {
+	if err := d.Dialector.Initialize(db); err != nil {
+		return err
+	}
+	db.ConnPool = d.wrap(db.ConnPool)
+	return nil
+}
+
+func TestServe_SinSQLDBSubyacenteFallaElArranque(t *testing.T) {
+	cfg := testConfig(t, "")
+	dialector := poolDialector{
+		Dialector: memoryDB(),
+		wrap:      func(p gorm.ConnPool) gorm.ConnPool { return notSQLPool{p} },
+	}
+
+	err := serve(context.Background(), cfg, dialector)
+
+	if err == nil || !strings.Contains(err.Error(), "error al obtener el *sql.DB subyacente") {
+		t.Fatalf("se esperaba el error del *sql.DB subyacente, llegó %v", err)
+	}
+}
+
+func TestServe_BaseDeSoloLecturaFallaLaMigracion(t *testing.T) {
+	cfg := testConfig(t, "")
+	// query_only deja pasar el ping de la conexión pero rechaza el CREATE TABLE.
+	readOnly := sqlite.Open(fmt.Sprintf("file:cmdapiro%d?mode=memory&cache=shared&_pragma=query_only(1)", memDBCounter.Add(1)))
+
+	err := serve(context.Background(), cfg, readOnly)
+
+	if err == nil || !strings.Contains(err.Error(), "error al migrar el esquema") {
+		t.Fatalf("se esperaba el error de migración, llegó %v", err)
+	}
+}
+
+func TestServe_ConfiguracionDeAWSInvalidaFallaElAlmacenDeEvidencia(t *testing.T) {
+	cfg := testConfig(t, "")
+	// Un bundle de CA que no existe hace fallar la carga de la configuración de AWS.
+	t.Setenv("AWS_CA_BUNDLE", filepath.Join(t.TempDir(), "no-existe.pem"))
+
+	done := make(chan error, 1)
+	go func() { done <- serve(context.Background(), cfg, memoryDB()) }()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "error al preparar el almacén de evidencia") {
+			t.Fatalf("se esperaba el error del almacén de evidencia, llegó %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("serve no terminó con la configuración de AWS inválida")
+	}
+}
+
+func TestRunUntilSignal_DevuelveElErrorDeArranque(t *testing.T) {
+	cfg := testConfig(t, "")
+
+	done := make(chan error, 1)
+	go func() { done <- runUntilSignal(cfg) }()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "error al conectar con la base de datos") {
+			t.Fatalf("se esperaba el error de conexión a la base, llegó %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("runUntilSignal no terminó con la base caída")
 	}
 }
 

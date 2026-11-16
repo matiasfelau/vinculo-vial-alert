@@ -49,12 +49,18 @@ func main() {
 		log.Fatalf("error al cargar la configuración: %v", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err = run(ctx, cfg)
-	stop()
-	if err != nil {
+	if err := runUntilSignal(cfg); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// runUntilSignal corre el servicio hasta que llega SIGINT o SIGTERM, o hasta
+// que el arranque falla. Es lo único que main agrega a run: así main queda sin
+// lógica y lo demás se prueba.
+func runUntilSignal(cfg config.Config) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return run(ctx, cfg)
 }
 
 // run levanta el servicio con la configuración dada y bloquea hasta que ctx se
