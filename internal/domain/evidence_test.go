@@ -18,10 +18,8 @@ func TestOriginalEvidenceKey(t *testing.T) {
 		index int
 		want  string
 	}{
-		"general":  {EvidenceRoleGeneral, 0, "alerts/11111111-1111-1111-1111-111111111111/original/general-0.bin"},
-		"plate":    {EvidenceRolePlate, 0, "alerts/11111111-1111-1111-1111-111111111111/original/plate-0.bin"},
-		"detail 2": {EvidenceRoleDetail, 2, "alerts/11111111-1111-1111-1111-111111111111/original/detail-2.bin"},
-		"context":  {EvidenceRoleContext, 0, "alerts/11111111-1111-1111-1111-111111111111/original/context-0.bin"},
+		"general": {EvidenceRoleGeneral, 0, "alerts/11111111-1111-1111-1111-111111111111/original/general-0.bin"},
+		"plate":   {EvidenceRolePlate, 0, "alerts/11111111-1111-1111-1111-111111111111/original/plate-0.bin"},
 	}
 	for nombre, caso := range casos {
 		if got := OriginalEvidenceKey(alertID, caso.role, caso.index); got != caso.want {
@@ -71,8 +69,8 @@ func TestNewEvidenceUploadedEvent_SinActorYConClavesSnakeCase(t *testing.T) {
 }
 
 func TestEvidenceRole_Slug(t *testing.T) {
-	if EvidenceRoleDetail.Slug() != "detail" {
-		t.Errorf("Slug = %q, se esperaba detail", EvidenceRoleDetail.Slug())
+	if EvidenceRolePlate.Slug() != "plate" {
+		t.Errorf("Slug = %q, se esperaba plate", EvidenceRolePlate.Slug())
 	}
 }
 

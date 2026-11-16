@@ -240,11 +240,11 @@ func TestExecute_Duplicado_NoBorraLasRedactadasQueLaAlertaActivaYaUsa(t *testing
 func TestExecute_TardioSobreAlertaExpirada_BorraLasRedactadasHuerfanas(t *testing.T) {
 	alertID := uuid.New()
 	general := redactada(alertID, domain.EvidenceRoleGeneral, 0)
-	detalle := redactada(alertID, domain.EvidenceRoleDetail, 1)
+	patente := redactada(alertID, domain.EvidenceRolePlate, 0)
 	repo := &mockRepo{resolution: domain.Resolution{Applied: false}, owned: map[string]bool{}}
 	store := &mockStore{}
 
-	err := nuevoServicio(repo, store).Execute(context.Background(), resultado(domain.VerdictYellow, alertID, general, detalle))
+	err := nuevoServicio(repo, store).Execute(context.Background(), resultado(domain.VerdictYellow, alertID, general, patente))
 
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)

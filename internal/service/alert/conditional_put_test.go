@@ -44,7 +44,6 @@ func fotosDe(prefijo string) []domain.EvidenceUpload {
 	return []domain.EvidenceUpload{
 		{Role: domain.EvidenceRoleGeneral, Index: 0, Ciphertext: []byte(prefijo + "-general")},
 		{Role: domain.EvidenceRolePlate, Index: 0, Ciphertext: []byte(prefijo + "-patente")},
-		{Role: domain.EvidenceRoleDetail, Index: 0, Ciphertext: []byte(prefijo + "-detalle")},
 	}
 }
 

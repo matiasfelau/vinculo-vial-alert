@@ -19,17 +19,16 @@ type countRange struct {
 }
 
 // evidenceRules define, por tipo de alerta habilitado, qué roles admite y
-// cuántas fotos de cada uno. Un tipo ausente de este mapa está deshabilitado.
+// cuántas fotos de cada uno (US-15: todo tipo lleva exactamente dos, GENERAL y
+// PLATE). Un tipo ausente de este mapa está deshabilitado.
 var evidenceRules = map[domain.AlertType]map[domain.EvidenceRole]countRange{
 	domain.AlertTypeParkedOnGarage: {
 		domain.EvidenceRoleGeneral: {1, 1},
 		domain.EvidenceRolePlate:   {1, 1},
-		domain.EvidenceRoleContext: {1, 1},
 	},
 	domain.AlertTypeCrashed: {
 		domain.EvidenceRoleGeneral: {1, 1},
 		domain.EvidenceRolePlate:   {1, 1},
-		domain.EvidenceRoleDetail:  {1, 3},
 	},
 }
 
@@ -47,14 +46,12 @@ func MaxEvidenceParts() int {
 	return most
 }
 
-// EvidenceRole traduce el nombre de una parte del multipart (general, plate,
-// detail, context) al rol de evidencia. Un nombre desconocido es inválido.
+// EvidenceRole traduce el nombre de una parte del multipart (general, plate)
+// al rol de evidencia. Un nombre desconocido es inválido.
 func EvidenceRole(partName string) (domain.EvidenceRole, error) {
 	for _, role := range []domain.EvidenceRole{
 		domain.EvidenceRoleGeneral,
 		domain.EvidenceRolePlate,
-		domain.EvidenceRoleDetail,
-		domain.EvidenceRoleContext,
 	} {
 		if partName == role.Slug() {
 			return role, nil
