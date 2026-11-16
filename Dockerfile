@@ -1,5 +1,5 @@
 # Etapa de compilación
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
 
@@ -16,5 +16,8 @@ COPY --from=builder /out/alert /alert
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 8080
+
+# Usuario sin privilegios (UID numérico: la imagen scratch no tiene /etc/passwd)
+USER 65532:65532
 
 ENTRYPOINT ["/alert"]
