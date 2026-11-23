@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -18,7 +18,9 @@ import (
 	"vinculo-vial-alert/internal/client/vehicle"
 	deliveryevents "vinculo-vial-alert/internal/delivery/events"
 	deliveryhttp "vinculo-vial-alert/internal/delivery/http"
+	"vinculo-vial-alert/internal/domain"
 	repopostgres "vinculo-vial-alert/internal/repository/postgres"
+	adminsvc "vinculo-vial-alert/internal/service/admin"
 	alertsvc "vinculo-vial-alert/internal/service/alert"
 	attemptsvc "vinculo-vial-alert/internal/service/attempt"
 	deletionsvc "vinculo-vial-alert/internal/service/deletion"
@@ -47,19 +49,43 @@ func main() {
 		log.Fatalf("error al cargar la configuración: %v", err)
 	}
 
-	db, err := gorm.Open(gormpostgres.Open(cfg.DatabaseURL), &gorm.Config{})
+	if err := runUntilSignal(cfg); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// runUntilSignal corre el servicio hasta que llega SIGINT o SIGTERM, o hasta
+// que el arranque falla. Es lo único que main agrega a run: así main queda sin
+// lógica y lo demás se prueba.
+func runUntilSignal(cfg config.Config) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return run(ctx, cfg)
+}
+
+// run levanta el servicio con la configuración dada y bloquea hasta que ctx se
+// cancela (señal de apagado) o un servidor HTTP no logra arrancar. Devuelve
+// nil tras un apagado ordenado y un error si el arranque falla.
+func run(ctx context.Context, cfg config.Config) error {
+	return serve(ctx, cfg, gormpostgres.Open(cfg.DatabaseURL))
+}
+
+// serve es run con el dialecto de la base inyectado, para poder probar el
+// cableado completo sin un Postgres.
+func serve(ctx context.Context, cfg config.Config, dialector gorm.Dialector) error {
+	db, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
-		log.Fatalf("error al conectar con la base de datos: %v", err)
+		return fmt.Errorf("error al conectar con la base de datos: %w", err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {
-		log.Fatalf("error al obtener el *sql.DB subyacente: %v", err)
+		return fmt.Errorf("error al obtener el *sql.DB subyacente: %w", err)
 	}
 	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
 	sqlDB.SetMaxIdleConns(dbMaxIdleConns)
 	sqlDB.SetConnMaxLifetime(dbConnMaxLifetime)
 	if err := repopostgres.AutoMigrate(db); err != nil {
-		log.Fatalf("error al migrar el esquema: %v", err)
+		return fmt.Errorf("error al migrar el esquema: %w", err)
 	}
 
 	// Connect solo devuelve error si el exchange no existe (error de
@@ -68,7 +94,7 @@ func main() {
 	// publican (ej. GET /alerts/inbox) sigan sirviendo.
 	rabbitConn, err := deliveryevents.Connect(cfg.RabbitMQURL, cfg.RabbitMQExchange)
 	if err != nil {
-		log.Fatalf("error al conectar con RabbitMQ: %v", err)
+		return fmt.Errorf("error al conectar con RabbitMQ: %w", err)
 	}
 	defer rabbitConn.Close()
 
@@ -97,6 +123,7 @@ func main() {
 	// tarde en salir mientras el worker reintenta).
 	outboxWorker := outboxsvc.NewWorker(outboxRepo, publisher, cfg.OutboxWorkerBatchSize)
 	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
@@ -116,7 +143,7 @@ func main() {
 	})
 	cancelStoreInit()
 	if err != nil {
-		log.Fatalf("error al preparar el almacén de evidencia: %v", err)
+		return fmt.Errorf("error al preparar el almacén de evidencia: %w", err)
 	}
 
 	// Los consumidores y el sweeper corren en background; los consumidores con
@@ -125,6 +152,7 @@ func main() {
 	verdictService := verdictsvc.NewApplyVerdictService(repopostgres.NewVerdictRepository(db, cfg.EvidenceBucket), evidenceStore)
 	verdictStatus := &deliveryevents.ConnectionStatus{}
 	consumersCtx, stopConsumers := context.WithCancel(context.Background())
+	defer stopConsumers()
 	verdictDone := make(chan struct{})
 	go func() {
 		defer close(verdictDone)
@@ -182,8 +210,9 @@ func main() {
 		sweeper.Run(consumersCtx, cfg.SweeperInterval)
 	}()
 
-	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery)
-	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, cfg.AttemptTTL)
+	dailyLimit := domain.DailyLimit{Max: cfg.AlertDailyLimitMax, Window: cfg.AlertDailyLimitWindow}
+	service := alertsvc.NewCreateAlertService(restrictionRepo, attemptRepo, vehicleResolver, auditSealer, repo, evidenceStore, cfg.EvidenceBucket, cfg.S3PutTimeout, cfg.PendingDelivery, dailyLimit)
+	attemptService := attemptsvc.NewCreateAttemptService(restrictionRepo, attemptRepo, vehicleResolver, repo, dailyLimit, cfg.AttemptTTL)
 	inboxService := inboxsvc.NewGetInboxService(inboxRepo, cfg.EvidenceRetention)
 	ownerService := ownersvc.NewService(repopostgres.NewOwnerRepository(db), evidenceStore, cfg.EvidenceRetention)
 	alertHandler := deliveryhttp.NewAlertHandler(service, cfg.EvidenceMaxPartBytes, cfg.RetryAfter)
@@ -212,15 +241,44 @@ func main() {
 		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
 
+	serverErrs := make(chan error, 2)
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("error al iniciar el servidor HTTP: %v", err)
+			serverErrs <- fmt.Errorf("error al iniciar el servidor HTTP: %w", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	// Puerto de administración (US-17): su propio servidor, que Kong no publica.
+	// Sin ADMIN_API_KEY no hay con qué autenticar, así que no arranca.
+	var adminServer *http.Server
+	if cfg.AdminEnabled() {
+		for _, warning := range cfg.AdminKeyWarnings() {
+			log.Printf("aviso: %s", warning)
+		}
+		adminService := adminsvc.NewService(repopostgres.NewAdminRepository(db), evidenceStore, cfg.EvidenceRetention)
+		adminHandler := deliveryhttp.NewAdminHandler(adminService, cfg.RetryAfter)
+		adminServer = &http.Server{
+			Addr:              ":" + cfg.AdminPort,
+			Handler:           deliveryhttp.NewAdminRouter(adminHandler, cfg.AdminAPIKey),
+			ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+			ReadTimeout:       cfg.HTTPReadTimeout,
+			WriteTimeout:      cfg.HTTPWriteTimeout,
+			IdleTimeout:       cfg.HTTPIdleTimeout,
+		}
+		go func() {
+			if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				serverErrs <- fmt.Errorf("error al iniciar el servidor de administración: %w", err)
+			}
+		}()
+	} else {
+		log.Println("aviso: ADMIN_API_KEY no está definida; el puerto de administración no arranca")
+	}
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case runErr = <-serverErrs:
+	}
 
 	log.Println("iniciando apagado ordenado...")
 
@@ -232,6 +290,11 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("error durante el drenado de requests: %v", err)
+	}
+	if adminServer != nil {
+		if err := adminServer.Shutdown(ctx); err != nil {
+			log.Printf("error durante el drenado del puerto de administración: %v", err)
+		}
 	}
 
 	stopConsumers()
@@ -272,4 +335,5 @@ func main() {
 	}
 
 	log.Println("servicio detenido.")
+	return runErr
 }

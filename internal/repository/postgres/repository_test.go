@@ -130,7 +130,7 @@ func nuevoEscenario(t *testing.T) *escenario {
 }
 
 func (e *escenario) crear() error {
-	return e.repo.CreatePending(context.Background(), e.now, e.alert, e.owners, e.evidence, e.event)
+	return e.repo.CreatePending(context.Background(), e.now, domain.DailyLimit{}, e.alert, e.owners, e.evidence, e.event)
 }
 
 // verificarSinRastros comprueba que la transacción no dejó nada y que el
@@ -173,7 +173,7 @@ func TestAlertRepository_CreatePending_RespetaContextoYaCanceladoDelLlamador(t *
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := e.repo.CreatePending(ctx, e.now, e.alert, e.owners, e.evidence, e.event); err == nil {
+	if err := e.repo.CreatePending(ctx, e.now, domain.DailyLimit{}, e.alert, e.owners, e.evidence, e.event); err == nil {
 		t.Fatal("se esperaba error al persistir con un contexto ya cancelado")
 	}
 }
@@ -183,7 +183,7 @@ func TestAlertRepository_CreatePending_DeadlineVencido_ClasificaComoErrDatabaseU
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
 	defer cancel()
 
-	err := e.repo.CreatePending(ctx, e.now, e.alert, e.owners, e.evidence, e.event)
+	err := e.repo.CreatePending(ctx, e.now, domain.DailyLimit{}, e.alert, e.owners, e.evidence, e.event)
 
 	if !errors.Is(err, domain.ErrDatabaseUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrDatabaseUnavailable", err)
@@ -213,9 +213,9 @@ func TestAlertRepository_CreatePending_PersisteLaAlertaEnPendingValidation(t *te
 		t.Errorf("status = %q, requires_review = %v; se esperaba PENDING_VALIDATION y false", status, requiresReview)
 	}
 
-	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at", "pending_ref", "pending_until", "audit_state"}
+	esperadas := []string{"id", "issuer_id", "alert_type", "status", "requires_review", "created_at", "verdict", "reason_codes", "scores", "model_versions", "validated_at", "seen_at", "pending_ref", "pending_until", "audit_state", "dedup_key"}
 	if got := columnasDe(t, e.db, "alerts"); !reflect.DeepEqual(got, esperadas) {
-		t.Errorf("columnas de alerts = %v, se esperaban %v (la tabla no debe persistir pat_enc ni owner_ids)", got, esperadas)
+		t.Errorf("columnas de alerts = %v, se esperaban %v (la tabla no debe persistir pat_enc ni owner_ids; dedup_key es el único derivado de la patente)", got, esperadas)
 	}
 }
 

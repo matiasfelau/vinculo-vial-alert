@@ -1,10 +1,14 @@
 package http
 
 import (
+	"errors"
+	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"vinculo-vial-alert/internal/domain"
 )
 
 // Códigos de error del contrato público. Viajan en el campo code junto con el
@@ -24,6 +28,7 @@ const (
 	codeNotFound               = "NOT_FOUND"
 	codeEvidenceExpired        = "EVIDENCE_EXPIRED"
 	codeAlreadyReported        = "ALREADY_REPORTED"
+	codeAlertDailyLimit        = "ALERT_DAILY_LIMIT"
 )
 
 const headerRetryAfter = "Retry-After"
@@ -41,4 +46,17 @@ func retryAfterSeconds(wait time.Duration) string {
 		seconds = 1
 	}
 	return strconv.Itoa(seconds)
+}
+
+// respondDailyLimit escribe el 409 del cupo de US-16:
+// { "error", "code": "ALERT_DAILY_LIMIT", "available_at": "<RFC3339>" }.
+// available_at sale de domain.DailyLimitError, en UTC. Es lo único que el
+// emisor aprende: nada de la patente ni de sus dueños.
+func respondDailyLimit(c *gin.Context, err error) {
+	body := gin.H{"error": "ya enviaste una alerta para esta patente", "code": codeAlertDailyLimit}
+	var limit *domain.DailyLimitError
+	if errors.As(err, &limit) {
+		body["available_at"] = limit.AvailableAt.UTC().Format(time.RFC3339)
+	}
+	c.JSON(http.StatusConflict, body)
 }

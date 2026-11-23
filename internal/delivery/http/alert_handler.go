@@ -104,6 +104,9 @@ func (h *AlertHandler) respondFailure(c *gin.Context, issuerID uuid.UUID, err er
 		respondError(c, http.StatusNotFound, codeAttemptNotFound, "el intento no existe")
 	case errors.Is(err, domain.ErrAttemptExpired):
 		respondError(c, http.StatusGone, codeAttemptExpired, "el intento venció")
+	case errors.Is(err, domain.ErrDailyLimitReached):
+		slog.Warn("alerts handler: cupo diario ocupado", "issuer_id", issuerID)
+		respondDailyLimit(c, err)
 	case errors.Is(err, domain.ErrInvalidPlateCryptogram):
 		respondError(c, http.StatusBadRequest, codeInvalidPlateCryptogram, "el criptograma o el formato de la patente es inválido")
 	case errors.Is(err, domain.ErrVehicleUnavailable), errors.Is(err, domain.ErrIdentityUnavailable), errors.Is(err, domain.ErrAuditSealMissing),

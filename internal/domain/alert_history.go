@@ -17,6 +17,10 @@ import (
 // en ninguna respuesta ni en ningún log, y se anulan al entregar la alerta o al
 // vencer.
 //
+// DedupKey es la clave por emisor y patente con la que se cuenta el cupo de
+// US-16. Vacía en las alertas anteriores, que no ocupan cupo. No permite
+// recuperar la patente ni relacionar alertas de emisores distintos.
+//
 // AuditState es el estado del registro de la alerta en Audit. Vacío significa
 // que la alerta no tiene registro (es anterior al deploy de Audit); toda alerta
 // nueva nace RECORDED.
@@ -29,4 +33,5 @@ type AlertHistory struct {
 	PendingRef   *uuid.UUID
 	PendingUntil *time.Time
 	AuditState   AuditState
+	DedupKey     string
 }

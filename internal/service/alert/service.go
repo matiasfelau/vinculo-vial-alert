@@ -3,7 +3,9 @@
 // sube los originales cifrados al almacén y registra la alerta en
 // PENDING_VALIDATION junto con el pedido de validación a IA. Que la patente
 // tenga dueños o no es invisible para el emisor: el camino y la respuesta son
-// los mismos.
+// los mismos. El envío también aplica el cupo de US-16 (una alerta por emisor y
+// patente en la ventana móvil) con la dedup_key que devuelve Vehicle: Alert
+// cuenta alertas sin conocer la patente.
 package alert
 
 import (
@@ -59,6 +61,7 @@ type CreateAlertService struct {
 	bucket          string
 	putBudget       time.Duration
 	pendingDelivery time.Duration
+	limit           domain.DailyLimit
 	now             func() time.Time
 }
 
@@ -67,8 +70,9 @@ type CreateAlertService struct {
 // sepa dónde leer; putBudget es el presupuesto total de los PUT concurrentes
 // (S3_PUT_TIMEOUT_MS); pendingDelivery es cuánto tiempo puede entregarse una
 // alerta de una patente sin dueños al primero que la vincule
-// (PENDING_DELIVERY_HOURS).
-func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts domain.AttemptRepository, resolver domain.OwnerResolver, sealer domain.AuditDNISealer, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget, pendingDelivery time.Duration) *CreateAlertService {
+// (PENDING_DELIVERY_HOURS); limit es el cupo por emisor y patente
+// (ALERT_DAILY_LIMIT_MAX y ALERT_DAILY_LIMIT_HOURS).
+func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts domain.AttemptRepository, resolver domain.OwnerResolver, sealer domain.AuditDNISealer, alerts domain.AlertRepository, store domain.EvidenceStore, bucket string, putBudget, pendingDelivery time.Duration, limit domain.DailyLimit) *CreateAlertService {
 	return &CreateAlertService{
 		restrictions:    restrictions,
 		attempts:        attempts,
@@ -79,6 +83,7 @@ func NewCreateAlertService(restrictions domain.RestrictionChecker, attempts doma
 		bucket:          bucket,
 		putBudget:       putBudget,
 		pendingDelivery: pendingDelivery,
+		limit:           limit,
 		now:             func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -99,9 +104,15 @@ func (s *CreateAlertService) CheckIssuer(ctx context.Context, issuerID uuid.UUID
 // valida el intento y se consulta, en paralelo, a Vehicle y a Identity, y recién
 // después se sube nada, así que una falla de cualquiera de los dos, una
 // respuesta sin pat_enc_ia o sin los criptogramas de Audit corta antes de
-// escribir en el almacén o en la base. En la misma transacción de la alerta se
-// escriben sus dos eventos de outbox: alert.evidence.uploaded y
-// audit.alert.recorded. Errores de dominio que devuelve:
+// escribir en el almacén o en la base. El cupo se controla dos veces: antes de
+// subir la evidencia (para no subir fotos de un envío que se va a rechazar) y,
+// de forma definitiva, dentro de la transacción de la alerta, bajo un advisory
+// lock por emisor y patente. En esa misma transacción se escriben sus dos
+// eventos de outbox: alert.evidence.uploaded y audit.alert.recorded. Errores de
+// dominio que devuelve:
+//   - domain.ErrDailyLimitReached (*domain.DailyLimitError): el emisor ya tiene
+//     una alerta PENDING_VALIDATION o ACTIVE para la patente en la ventana. Sale
+//     igual con o sin dueño. Lo subido se borra y el intento queda vigente.
 //   - domain.ErrAttemptNotFound: el intento no existe o es de otro usuario.
 //   - domain.ErrAttemptExpired: el intento venció o lo consumió otra solicitud.
 //   - domain.ErrInvalidPlateCryptogram: Vehicle rechazó el criptograma o el
@@ -155,6 +166,18 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 		slog.Error("create alert service: falta el criptograma de auditoría o las claves de Audit no coinciden", "alert_id", alertID)
 		return CreateAlertResult{}, fmt.Errorf("create alert service: %w", domain.ErrAuditSealMissing)
 	}
+	// Sin dedup_key no hay forma de contar el cupo: dejar pasar el envío sería un
+	// hueco silencioso en la regla, así que se corta como una respuesta de
+	// Vehicle fuera de contrato (502), igual que un pat_enc_ia ausente.
+	if resolved.DedupKey == "" {
+		slog.Error("create alert service: Vehicle respondió sin dedup_key", "alert_id", alertID)
+		return CreateAlertResult{}, fmt.Errorf("create alert service: %w: la respuesta no trae dedup_key", domain.ErrVehicleBadResponse)
+	}
+	// Control temprano del cupo: antes de subir la evidencia y de escribir nada.
+	// El definitivo es el de CreatePending, en la misma transacción que el alta.
+	if err := s.alerts.CheckDailyLimit(ctx, now, input.IssuerID, resolved.DedupKey, s.limit); err != nil {
+		return CreateAlertResult{}, err
+	}
 	recipients := recipientsOf(resolved.OwnerIDs, input.IssuerID)
 	pendingRef, pendingUntil := s.pendingOf(resolved, now)
 
@@ -203,11 +226,17 @@ func (s *CreateAlertService) Execute(ctx context.Context, input CreateAlertInput
 		PendingRef:   pendingRef,
 		PendingUntil: pendingUntil,
 		AuditState:   domain.AuditStateRecorded,
+		DedupKey:     resolved.DedupKey,
 	}
-	if err := s.alerts.CreatePending(ctx, now, alertRow, recipients, evidence, event, recorded); err != nil {
+	if err := s.alerts.CreatePending(ctx, now, s.limit, alertRow, recipients, evidence, event, recorded); err != nil {
 		s.cleanupAfterFailedCreate(ctx, alertID, evidence, err)
 		if errors.Is(err, domain.ErrAttemptExpired) {
 			return CreateAlertResult{}, domain.ErrAttemptExpired
+		}
+		if errors.Is(err, domain.ErrDailyLimitReached) {
+			// El otro envío ganó el lock. La transacción se revirtió entera, el
+			// intento sigue vigente y la evidencia de este envío ya se borró.
+			return CreateAlertResult{}, err
 		}
 		return CreateAlertResult{}, fmt.Errorf("create alert service: error al registrar la alerta: %w", err)
 	}
@@ -234,7 +263,7 @@ func (s *CreateAlertService) resolveAndSeal(ctx context.Context, issuerID uuid.U
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		resolved, resolveErr = s.resolver.ResolveOwners(ctx, patEnc, alertID)
+		resolved, resolveErr = s.resolver.ResolveOwners(ctx, patEnc, alertID, issuerID)
 	}()
 	go func() {
 		defer wg.Done()

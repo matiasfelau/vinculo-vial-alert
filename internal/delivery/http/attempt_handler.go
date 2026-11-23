@@ -1,7 +1,9 @@
 package http
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -12,6 +14,16 @@ import (
 	"vinculo-vial-alert/internal/domain"
 	"vinculo-vial-alert/internal/service/attempt"
 )
+
+// maxAttemptBodyBytes es el tope del body del intento: el pat_enc cabe en 4 KB,
+// el mismo límite que Gateway aplica a la ruta.
+const maxAttemptBodyBytes = 4 * 1024
+
+// createAttemptRequest es el body opcional del intento. PatEnc es el mismo
+// criptograma contra Vehicle que usa el envío: Alert lo reenvía sin abrirlo.
+type createAttemptRequest struct {
+	PatEnc string `json:"pat_enc"`
+}
 
 type createAttemptResponse struct {
 	AttemptID uuid.UUID `json:"attempt_id"`
@@ -32,8 +44,9 @@ func NewAttemptHandler(service *attempt.CreateAttemptService, retryAfter time.Du
 
 // CreateAttempt implementa POST /api/v1/alerts/attempts. X-User-Id llega
 // inyectado por Kong a partir del JWT verificado; nunca se confía en un valor
-// que no provenga de ese encabezado. El body no se lee: el intento no lleva
-// datos, y un pat_enc que llegue de un cliente viejo se ignora.
+// que no provenga de ese encabezado. El body es opcional: con un pat_enc el
+// intento controla además el cupo de US-16 (409 ALERT_DAILY_LIMIT); sin body,
+// o con uno que no se pueda leer, se comporta como siempre y el envío controla.
 func (h *AttemptHandler) CreateAttempt(c *gin.Context) {
 	issuerID, err := uuid.Parse(c.GetHeader(headerUserID))
 	if err != nil {
@@ -41,7 +54,7 @@ func (h *AttemptHandler) CreateAttempt(c *gin.Context) {
 		return
 	}
 
-	created, err := h.service.Execute(c.Request.Context(), attempt.CreateAttemptInput{IssuerID: issuerID})
+	created, err := h.service.Execute(c.Request.Context(), attempt.CreateAttemptInput{IssuerID: issuerID, PatEnc: readAttemptPatEnc(c)})
 	if err != nil {
 		h.respondFailure(c, issuerID, err)
 		return
@@ -53,10 +66,37 @@ func (h *AttemptHandler) CreateAttempt(c *gin.Context) {
 	})
 }
 
+// readAttemptPatEnc lee el pat_enc opcional del body. Un body ausente, más
+// grande que el tope o que no sea el JSON esperado se trata como "sin pat_enc":
+// el control del intento es opcional y el envío vuelve a controlar, así que no
+// vale la pena rechazar al emisor. El contenido nunca se loguea.
+func readAttemptPatEnc(c *gin.Context) string {
+	if c.Request.Body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxAttemptBodyBytes))
+	if err != nil {
+		slog.Warn("attempts handler: no se pudo leer el body, se sigue sin control de cupo")
+		return ""
+	}
+	if len(raw) == 0 {
+		return ""
+	}
+	var request createAttemptRequest
+	if err := json.Unmarshal(raw, &request); err != nil {
+		slog.Warn("attempts handler: body inválido, se sigue sin control de cupo")
+		return ""
+	}
+	return request.PatEnc
+}
+
 // respondFailure traduce un error de dominio a la respuesta del contrato. Los
 // mensajes nunca incluyen detalles internos.
 func (h *AttemptHandler) respondFailure(c *gin.Context, issuerID uuid.UUID, err error) {
 	switch {
+	case errors.Is(err, domain.ErrDailyLimitReached):
+		slog.Warn("attempts handler: cupo diario ocupado", "issuer_id", issuerID)
+		respondDailyLimit(c, err)
 	case errors.Is(err, domain.ErrIssuerUnderReview):
 		slog.Warn("attempts handler: emisor en revisión", "issuer_id", issuerID)
 		respondError(c, http.StatusForbidden, codeIssuerUnderReview, "el emisor está en revisión")

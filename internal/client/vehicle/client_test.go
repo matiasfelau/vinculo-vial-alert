@@ -55,7 +55,7 @@ func TestClient_ResolveOwners_Exitoso(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	resolved, err := client.ResolveOwners(context.Background(), patEncEsperado, alertID)
+	resolved, err := client.ResolveOwners(context.Background(), patEncEsperado, alertID, uuid.New())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestClient_ResolveOwners_TimeoutDevuelveErrVehicleUnavailable(t *testing.T)
 	defer server.Close()
 
 	client := NewClient(server.URL, 5*time.Millisecond, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if !errors.Is(err, domain.ErrVehicleUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable", err)
 	}
@@ -92,7 +92,7 @@ func TestClient_ResolveOwners_ErrorDeServidorDevuelveErrVehicleBadResponse(t *te
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if !errors.Is(err, domain.ErrVehicleBadResponse) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleBadResponse (un 5xx es un upstream que respondió mal, no una caída de conexión)", err)
 	}
@@ -109,7 +109,7 @@ func TestClient_ResolveOwners_CuerpoInvalidoDevuelveErrVehicleBadResponse(t *tes
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if !errors.Is(err, domain.ErrVehicleBadResponse) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleBadResponse ante un cuerpo no decodificable", err)
 	}
@@ -123,7 +123,7 @@ func TestClient_ResolveOwners_OwnerIDInvalidoDevuelveErrVehicleBadResponse(t *te
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if !errors.Is(err, domain.ErrVehicleBadResponse) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleBadResponse ante un owner_id no parseable", err)
 	}
@@ -131,7 +131,7 @@ func TestClient_ResolveOwners_OwnerIDInvalidoDevuelveErrVehicleBadResponse(t *te
 
 func TestClient_ResolveOwners_ServidorInalcanzable(t *testing.T) {
 	client := NewClient("http://127.0.0.1:1", time.Second, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if !errors.Is(err, domain.ErrVehicleUnavailable) {
 		t.Fatalf("error = %v, se esperaba que envolviera ErrVehicleUnavailable", err)
 	}
@@ -149,7 +149,7 @@ func TestClient_ResolveOwners_RechazoPorAutenticacion(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, "token-incorrecto")
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	// Un 401 es un rechazo por un problema propio (token mal configurado),
 	// no una caída de Vehicle: no debe confundirse con ErrVehicleUnavailable
 	// ni con ErrVehicleBadResponse, para no contar como falla de
@@ -172,7 +172,7 @@ func TestClient_ResolveOwners_400DevuelveErrInvalidPlateCryptogram(t *testing.T)
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 
 	if !errors.Is(err, domain.ErrInvalidPlateCryptogram) {
 		t.Fatalf("error = %v, se esperaba ErrInvalidPlateCryptogram", err)
@@ -189,7 +189,7 @@ func TestClient_ResolveOwners_429CuentaComoIndisponibilidad(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 
 	if !errors.Is(err, domain.ErrVehicleUnavailable) {
 		t.Fatalf("error = %v, se esperaba ErrVehicleUnavailable: un 429 computa como falla", err)
@@ -205,7 +205,7 @@ func TestClient_ResolveOwners_LogsNoIncluyenElCriptograma(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, time.Second, tokenDePrueba)
-	_, err := client.ResolveOwners(context.Background(), "CRIPTOGRAMA-SECRETO", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "CRIPTOGRAMA-SECRETO", uuid.New(), uuid.New())
 
 	if err == nil {
 		t.Fatal("se esperaba un error")
@@ -222,7 +222,7 @@ func TestClient_ResolveOwners_SinCamposDeAudit_LosEntregaVaciosParaQueElCasoDeUs
 	}))
 	defer server.Close()
 
-	resolved, err := NewClient(server.URL, time.Second, tokenDePrueba).ResolveOwners(context.Background(), "x", uuid.New())
+	resolved, err := NewClient(server.URL, time.Second, tokenDePrueba).ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)

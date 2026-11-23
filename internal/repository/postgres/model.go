@@ -15,11 +15,11 @@ import (
 // salen de ella no llevan actor.
 type AlertModel struct {
 	ID             uuid.UUID  `gorm:"type:uuid;primaryKey;index:idx_alerts_created_at_id,priority:2,sort:desc"`
-	IssuerID       *uuid.UUID `gorm:"type:uuid;index"`
+	IssuerID       *uuid.UUID `gorm:"type:uuid;index;index:idx_alerts_issuer_dedup_created,priority:1"`
 	AlertType      string     `gorm:"column:alert_type;type:varchar(64);not null"`
 	Status         string     `gorm:"type:varchar(32);not null;index:idx_alerts_status_created_at,priority:1"`
 	RequiresReview bool       `gorm:"column:requires_review;not null;default:false"`
-	CreatedAt      time.Time  `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc;index:idx_alerts_status_created_at,priority:2"`
+	CreatedAt      time.Time  `gorm:"type:timestamptz;not null;index:idx_alerts_created_at_id,priority:1,sort:desc;index:idx_alerts_status_created_at,priority:2;index:idx_alerts_issuer_dedup_created,priority:3"`
 
 	// Resultado de la validación de IA. Se guardan para evaluar al modelo
 	// junto con el feedback de los dueños; son nulos hasta que llega el
@@ -49,6 +49,13 @@ type AlertModel struct {
 	// Es nulo en las alertas anteriores al deploy de Audit, que no emiten ningún
 	// evento de Audit. Es interno: ninguna lectura lo selecciona.
 	AuditState *string `gorm:"column:audit_state;type:varchar(16)"`
+
+	// DedupKey es la clave por emisor y patente con la que se cuenta el cupo de
+	// US-16 (HMAC-SHA256 en hex, la calcula Vehicle): Alert cuenta las alertas de
+	// un emisor a una patente sin conocerla ni poder relacionar emisores. Es nula
+	// en las alertas anteriores, que no ocupan cupo. Es interna: ninguna lectura
+	// la selecciona. El índice (issuer_id, dedup_key, created_at) sirve al conteo.
+	DedupKey *string `gorm:"column:dedup_key;type:varchar(64);index:idx_alerts_issuer_dedup_created,priority:2"`
 }
 
 // TableName fija el nombre de tabla explícito.

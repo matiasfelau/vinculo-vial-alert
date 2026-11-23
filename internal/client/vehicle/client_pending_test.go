@@ -35,7 +35,7 @@ func TestClient_ResolveOwners_SinDuenos_PropagaPatEncIAYPendingRef(t *testing.T)
 	ref := uuid.New().String()
 	client := servidorQueResponde(t, resolveOwnerResponse{OwnerIDs: []string{}, PatEncIA: patEncIADePrueba, PendingRef: &ref})
 
-	resolved, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	resolved, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestClient_ResolveOwners_ConDuenos_NoTraePendingRef(t *testing.T) {
 	owner := uuid.New()
 	client := servidorQueResponde(t, resolveOwnerResponse{OwnerIDs: []string{owner.String()}, PatEncIA: patEncIADePrueba})
 
-	resolved, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	resolved, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestClient_ResolveOwners_SinDuenosSinPendingRef_EsValido(t *testing.T) {
 	// igual, sin posibilidad de entregarse a un dueño futuro.
 	client := servidorQueResponde(t, resolveOwnerResponse{OwnerIDs: []string{}, PatEncIA: patEncIADePrueba})
 
-	resolved, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	resolved, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 	if err != nil {
 		t.Fatalf("error inesperado: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestClient_ResolveOwners_SinPatEncIA_EsRespuestaInvalida_ConYSinDuenos(t *t
 		t.Run(nombre, func(t *testing.T) {
 			client := servidorQueResponde(t, response)
 
-			_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+			_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 
 			if !errors.Is(err, domain.ErrVehicleBadResponse) {
 				t.Fatalf("error = %v, se esperaba ErrVehicleBadResponse", err)
@@ -116,7 +116,7 @@ func TestClient_ResolveOwners_PendingRefInvalido_EsRespuestaInvalida(t *testing.
 		t.Run(nombre, func(t *testing.T) {
 			client := servidorQueResponde(t, resolveOwnerResponse{OwnerIDs: []string{}, PatEncIA: patEncIADePrueba, PendingRef: &ref})
 
-			_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+			_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 
 			if !errors.Is(err, domain.ErrVehicleBadResponse) {
 				t.Fatalf("error = %v, se esperaba ErrVehicleBadResponse", err)
@@ -136,7 +136,7 @@ func TestClient_ResolveOwners_NiLosErroresNiLosLogsIncluyenElPendingRef(t *testi
 	ref := "REFERENCIA-PENDIENTE-SECRETA"
 	client := servidorQueResponde(t, resolveOwnerResponse{OwnerIDs: []string{}, PatEncIA: patEncIADePrueba, PendingRef: &ref})
 
-	_, err := client.ResolveOwners(context.Background(), "x", uuid.New())
+	_, err := client.ResolveOwners(context.Background(), "x", uuid.New(), uuid.New())
 
 	if err == nil {
 		t.Fatal("se esperaba un error")
